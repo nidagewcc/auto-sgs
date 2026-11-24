@@ -19,7 +19,7 @@ var __SRC = String(engines.myEngine().getSource());
 if (__SRC.indexOf("_main.js") < 0) {
     // 第一遍（由 bootstrap eval 进来）：把完整代码写进手机文件，然后交给新引擎，自己自然结束
     try {
-        var __r = http.get("http://192.168.2.250:8099/src/main.js", { timeout: 20000 });
+        var __r = http.get("http://192.168.2.250:8099/src/main.js?t=" + new Date().getTime(), { timeout: 20000 });
         var __code = __r.body.string();
         files.createWithDirs(__SELF);
         files.write(__SELF, __code);
@@ -40,6 +40,7 @@ var pushedIdx = 0;
 
 sgs.log = {
     i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); },
+    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); },
     e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); }
 };
 
@@ -82,6 +83,23 @@ try {
 
 sgs.log.i("step2 截图权限");
 try {
+    // 画布方向只在进程内「首次」申请时生效（之后重复 requestScreenCapture 会忽略方向参数），
+    // 所以必须先让横屏的游戏进入前台，再申请截图。
+    var __cur = "";
+    try { __cur = currentPackage(); } catch (__e0) { __cur = ""; }
+    if (__cur !== "com.sanguosha.mjz.mi") {
+        sgs.log.i("前台 " + __cur + "，先拉起游戏再申请截图");
+        try { app.launchPackage("com.sanguosha.mjz.mi"); } catch (__e1) { }
+    }
+    var __land = false;
+    for (var __i = 0; __i < 6 && !__land; __i++) {
+        sleep(2000);
+        try {
+            __land = (context.getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+        } catch (__e2) { __land = (device.width > device.height); }
+    }
+    sgs.log.i("横屏确认 land=" + __land);
     var okCap = sgs.vision.init();
     sgs.log.i("截图权限 " + okCap);
 } catch (e2) {
@@ -124,6 +142,9 @@ threads.start(function () {
                 sgs.ui.stopAll();
             } else if (cmd.indexOf("shot") == 0) {
                 sgs.pushShot();
+            } else if (cmd.indexOf("diag") == 0) {
+                try { sgs.tasks.diag.run(); } catch (ed) { sgs.log.e("diag 失败 " + ed); }
+                sgs.pushLog();
             } else if (cmd.indexOf("ball") == 0) {
                 sgs.ui.ballView = null;
                 sgs.ui.showBall();
@@ -153,7 +174,7 @@ threads.start(function () {
                 try {
                     sgs.log.i("reload step1 拉取代码");
                     sgs.pushLog();
-                    var nr = http.get(sgs.PC + "/src/main.js", { timeout: 25000 });
+                    var nr = http.get(sgs.PC + "/src/main.js?t=" + new Date().getTime(), { timeout: 25000 });
                     var ncode = nr.body.string();
                     sgs.log.i("reload step2 拿到 " + ncode.length + " 字节");
                     sgs.pushLog();

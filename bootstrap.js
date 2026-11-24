@@ -6,7 +6,8 @@ var PC = "http://192.168.2.250:8099";
 var SRC = "/src/main.js";
 
 try {
-    var r = http.get(PC + SRC, { timeout: 10000 });
+    // 带时间戳，绕开手机端 HTTP 缓存（否则会一直拉到旧代码）
+    var r = http.get(PC + SRC + "?t=" + new Date().getTime(), { timeout: 10000 });
     if (!r || r.statusCode != 200) {
         toast("拉取失败: " + (r ? r.statusCode : "no response"));
         log("bootstrap: fetch failed");

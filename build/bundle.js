@@ -5,7 +5,7 @@ var __SRC = String(engines.myEngine().getSource());
 if (__SRC.indexOf("_main.js") < 0) {
     // 第一遍（由 bootstrap eval 进来）：把完整代码写进手机文件，然后交给新引擎，自己自然结束
     try {
-        var __r = http.get("http://192.168.2.250:8099/src/main.js", { timeout: 20000 });
+        var __r = http.get("http://192.168.2.250:8099/src/main.js?t=" + new Date().getTime(), { timeout: 20000 });
         var __code = __r.body.string();
         files.createWithDirs(__SELF);
         files.write(__SELF, __code);
@@ -25,6 +25,7 @@ var pushedIdx = 0;
 
 sgs.log = {
     i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); },
+    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); },
     e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); }
 };
 
@@ -83,16 +84,22 @@ sgs = (typeof sgs === "undefined") ? {} : sgs;
 sgs.vision = {
     _img: null,
     _capOk: false,
+    _band: null,
+    _scale: null,
 
     /** 申请一次截图权限（每次启动需一次）；强制横屏，否则游戏横屏时会拿到竖屏画布 */
     init: function () {
         if (this._capOk) return true;
         try {
             var land = false;
-            try {
-                var ori = context.getResources().getConfiguration().orientation;
-                land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
-            } catch (eo) { land = (device.width > device.height); }
+            if (this._landForce) {
+                land = true; // 强制横屏画布（游戏横屏时用）
+            } else {
+                try {
+                    var ori = context.getResources().getConfiguration().orientation;
+                    land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+                } catch (eo) { land = (device.width > device.height); }
+            }
             this._capOk = requestScreenCapture(land);
             log("[vision] 申请截图 land=" + land + " 结果=" + this._capOk);
             sleep(500);
@@ -119,7 +126,7 @@ sgs.vision = {
         if (!force && this._img) return this._img;
         if (!this._capOk && !this.init()) return null;
         try {
-            this._img = captureScreen();
+            this._img = this._normalize(captureScreen());
             return this._img;
         } catch (e) {
             log("[vision] 截图失败 " + e);
@@ -127,11 +134,85 @@ sgs.vision = {
         }
     },
 
-    reset: function () { this._img = null; },
+    /**
+     * 本机 MediaProjection 固定按物理竖屏 1280x2772 建画布（requestScreenCapture 的方向参数无效），
+     * 横屏游戏画面被等比缩小、垂直居中放在中间一条，上下全黑。
+     * 这里把内容带裁出来并还原成 2772x1280，后续所有 ROI / 坐标都按游戏坐标走。
+     */
+    _normalize: function (img) {
+        if (!img) return img;
+        var w = img.getWidth(), h = img.getHeight();
+        if (w > h) return img; // 已经是横屏画布
+        try {
+            if (!this._band) {
+                var cx = Math.floor(w / 2);
+                var top = -1, bot = -1, y, c, sum;
+                for (y = 0; y < h; y++) {
+                    c = images.pixel(img, cx, y);
+                    sum = ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+                    if (sum > 45) { top = y; break; }
+                }
+                for (y = h - 1; y >= 0; y--) {
+                    c = images.pixel(img, cx, y);
+                    sum = ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+                    if (sum > 45) { bot = y; break; }
+                }
+                if (top < 0 || bot - top < 200) {
+                    sgs.log.e("[vision] 未找到内容带 top=" + top + " bot=" + bot);
+                    return img;
+                }
+                var bh = bot - top + 1;
+                var bw = Math.round(bh * 2772 / 1280);
+                if (bw > w) bw = w;
+                this._band = { x: Math.round((w - bw) / 2), y: top, w: bw, h: bh };
+                sgs.log.i("[vision] letterbox 内容带 " + JSON.stringify(this._band) + " 画布 " + w + "x" + h);
+            }
+            var b = this._band;
+            var clip = images.clip(img, b.x, b.y, b.w, b.h);
+            var rs = null;
+            try {
+                rs = images.resize(clip, 2772, 1280, "LINEAR");
+            } catch (er1) {
+                try {
+                    rs = images.scale(clip, 2772 / b.w, 1280 / b.h, "LINEAR");
+                } catch (er2) {
+                    sgs.log.e("[vision] resize/scale 都不可用，改走坐标映射：" + er2);
+                    this._scale = { x: b.w / 2772, y: b.h / 1280 };
+                    rs = clip;
+                }
+            }
+            this._normOnce = (this._normOnce || 0) + 1;
+            if (this._normOnce <= 2) {
+                sgs.log.i("[vision] 归一化输出 " + rs.getWidth() + "x" + rs.getHeight()
+                    + (this._scale ? " (映射模式)" : " (还原模式)"));
+            }
+            if (!this._dbgSaved) {
+                this._dbgSaved = true;
+                try { images.save(img, sgs.LOG_DIR + "_raw.jpg"); } catch (e1) { sgs.log.e("[vision] save raw 失败 " + e1); }
+                try { images.save(rs, sgs.LOG_DIR + "_norm.jpg"); } catch (e2) { sgs.log.e("[vision] save norm 失败 " + e2); }
+            }
+            return rs;
+        } catch (e) {
+            sgs.log.e("[vision] normalize 异常 " + e);
+            return img;
+        }
+    },
+
+    reset: function () { this._img = null; this._band = null; this._scale = null; },
 
     /** [左,上,右,下] -> [x,y,w,h] */
     _toRegion: function (rect) {
         return [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]];
+    },
+
+    /** 游戏坐标(2772x1280) -> 当前画布坐标（仅在缩放模式需要） */
+    _mapRect: function (rect) {
+        if (!rect || !this._scale) return rect;
+        var s = this._scale;
+        return [
+            Math.round(rect[0] * s.x), Math.round(rect[1] * s.y),
+            Math.round(rect[2] * s.x), Math.round(rect[3] * s.y)
+        ];
     },
 
     /** 按 ROI 裁图做 OCR，返回去掉空白的文本 */
@@ -139,6 +220,7 @@ sgs.vision = {
         img = img || this.frame();
         if (!img) return "";
         try {
+            rect = this._mapRect(rect);
             var w = rect[2] - rect[0];
             var h = rect[3] - rect[1];
             if (w <= 0 || h <= 0) return "";
@@ -186,10 +268,29 @@ sgs.vision = {
         if (!tpl) return null;
         try {
             var opt = { threshold: threshold || sgs.THRESHOLD.image };
-            if (rect) opt.region = this._toRegion(rect);
-            return images.findImage(img, tpl, opt);
+            // 本机 findImage 的 region 参数不可靠（会报 Path bounds must not be negative），
+            // 改为先用 images.clip 裁出 ROI 再全图匹配，返回坐标补回偏移。
+            var ox = 0, oy = 0, target = img;
+            rect = this._mapRect(rect);
+            if (rect) {
+                var rw = rect[2] - rect[0], rh = rect[3] - rect[1];
+                if (rw <= 0 || rh <= 0) return null;
+                if (rw < tpl.getWidth() || rh < tpl.getHeight()) return null;
+                target = images.clip(img, rect[0], rect[1], rw, rh);
+                ox = rect[0]; oy = rect[1];
+            }
+            var r = images.findImage(target, tpl, opt);
+            if (r) r = { x: r.x + ox, y: r.y + oy };
+            if (name.indexOf("anchor") >= 0) {
+                sgs.log.i("[dbg] anchor img=" + img.getWidth() + "x" + img.getHeight()
+                    + " tpl=" + tpl.getWidth() + "x" + tpl.getHeight()
+                    + " rect=" + JSON.stringify(rect) + " -> " + (r ? (r.x + "," + r.y) : "null"));
+            }
+            return r;
         } catch (e) {
-            log("[vision] find 异常 " + name + " : " + e);
+            log("[vision] find 异常 " + name + " : " + e
+                + " | img=" + (img && img.getWidth ? img.getWidth() + "x" + img.getHeight() : "?")
+                + " | rect=" + JSON.stringify(rect) + " | stack=" + (e && e.stack ? e.stack : "-"));
             return null;
         }
     },
@@ -209,10 +310,10 @@ sgs.vision = {
         click(x + dx, y + dy);
     },
 
-    /** OCR 判断区域内是否含关键词 */
+    /** OCR 判断区域内是否含关键词（忽略空白差异，每次都取新帧） */
     hasText: function (kw, rect, img) {
-        var t = this.ocrRect(rect, img);
-        return String(t).indexOf(kw) >= 0;
+        var t = this.ocrRect(rect, img || this.frame(true)).replace(/\s+/g, "");
+        return t.indexOf(String(kw).replace(/\s+/g, "")) >= 0;
     },
 
     /** 等到区域内出现关键词 */
@@ -271,19 +372,29 @@ sgs.game = {
     ensure: function (maxMs) {
         maxMs = maxMs || 120000;
         var v = sgs.vision;
+
+        // 关键：游戏是横屏 app。必须先把游戏拉到前台再申请截图，
+        // 否则脚本在 AutoX 竖屏界面启动，画布会被建成 1280x2772，之后永远错位。
+        var cur = "";
+        try { cur = currentPackage(); } catch (e) { cur = ""; }
+        if (cur !== this.PKG) {
+            sgs.log.i("前台 " + cur + "，先拉起游戏 " + this.PKG);
+            try { app.launchPackage(this.PKG); } catch (e) { sgs.log.e("启动失败 " + e); }
+            sleep(4000);
+        }
+
+        // 按当前（游戏横屏）方向重建画布
+        v._capOk = false;
+        v.reset();
+        v._landForce = false;
         if (!v.init()) throw new Error("截图权限失败");
 
-        // 先探一帧：已经在主城就直接返回（currentPackage 在该机上不可靠）
         var im = v.frame(true);
         if (im && v.isHome(im)) {
             sgs.log.i("已在主城，无需拉起");
             return true;
         }
-
-        var cur = "";
-        try { cur = currentPackage(); } catch (e) { cur = ""; }
-        sgs.log.i("前台 " + cur + "，拉起游戏 " + this.PKG);
-        try { app.launchPackage(this.PKG); } catch (e) { sgs.log.e("启动失败 " + e); }
+        sgs.log.i("游戏已在前台，等待主城");
         return this.waitHome(maxMs);
     },
 
@@ -314,9 +425,10 @@ sgs.game = {
                 notLand++;
                 sgs.log.i("第" + n + "次 竖屏画布 " + w + "x" + h + "（连续" + notLand + "）");
                 if (notLand >= 3) {
-                    sgs.log.i("重新申请横屏截图");
+                    sgs.log.i("重新申请横屏截图（强制横屏）");
                     v._capOk = false;
                     v.reset();
+                    v._landForce = true;
                     v.init();
                     notLand = 0;
                 }
@@ -546,23 +658,26 @@ sgs.tasks.xiaoqiao = {
     id: "xiaoqiao",
     name: "主城小乔·一键日常",
 
-    ENTRY: "xiaoqiao/xiaoqiao_entry.png",
-    ENTRY_LEFT: [0, 0, 180, 1280],
-    ENTRY_RIGHT: [2670, 0, 2772, 1280],
+    ENTRY: "xiaoqiao/entry-left.png",
+    ENTRY_LEFT: [0, 380, 150, 600],
+    ENTRY_RIGHT: [2400, 480, 2772, 780],
     ENTRY_RIGHT_TPL: "xiaoqiao/home-avatar.png",
-    ENTRY_TH: 0.86,
+    ENTRY_TH: 0.75,
+    AVATAR_POINT: [38, 485], // 左侧头像被屏幕边缘裁掉一半，点击用固定坐标更稳
 
     TAB_TEXT: "日常功能",
+    TAB_CHECK: "日常", // OCR 常把「功」认成「劝」，判断时用短词
     TAB_REGION: [1820, 390, 2090, 535],
 
     KAIQI: "xiaoqiao/kaiqi.png",
     KAIQI_REGION: [1800, 700, 2150, 1050],
+    KAIQI_POINT: [1900, 940], // 图识别兜底 + 实际点击点：日常功能页右下角「开启」中心
     KAIQI_TH: 0.8,
 
-    COMPLETION_REGION: [1190, 1070, 1580, 1155],
+    COMPLETION_REGION: [860, 1060, 1980, 1165],
     REWARD_REGION: [950, 70, 1850, 260],
     BLANK_TAP: [400, 640],
-    RESULT_CLOSE: [1999, 89],
+    RESULT_CLOSE: [1940, 88],
     PANEL_CLOSE: [2127, 235],
     AGAIN_REGION: [875, 530, 1870, 675],
     CONFIRM_REGION: [1430, 800, 1800, 925],
@@ -577,6 +692,18 @@ sgs.tasks.xiaoqiao = {
         return v.find(this.ENTRY_RIGHT_TPL, this.ENTRY_TH, this.ENTRY_RIGHT, v.frame(true));
     },
 
+    _done: function () {
+        var v = sgs.vision;
+        var im = v.frame(true);
+        // 结果窗底部绿条（实测 RGB #80CF4C）：OCR 读不出描边字，改判颜色
+        try {
+            var b = this.COMPLETION_REGION;
+            var c = images.clip(im, b[0], b[1], b[2] - b[0], b[3] - b[1]);
+            if (images.findColor(c, "#80CF4C", { threshold: 60 })) return true;
+        } catch (e) { }
+        return false;
+    },
+
     _findReward: function () {
         var v = sgs.vision;
         return v.hasText("恭喜获得", this.REWARD_REGION) || v.hasText("贡献获得", this.REWARD_REGION);
@@ -588,37 +715,29 @@ sgs.tasks.xiaoqiao = {
 
     _openPanel: function () {
         var v = sgs.vision;
-        if (v.hasText(this.TAB_TEXT, this.TAB_REGION)) {
-            sgs.log.i("小乔助手面板已打开");
+        // 主城能识别到头像 → 面板没开，点它；识别不到 → 视为面板已打开
+        var avatar = this._findAvatar();
+        if (!avatar) {
+            sgs.log.i("未找到小乔头像，视为助手面板已打开");
             return;
         }
-        var t0 = new Date().getTime();
-        var avatar = this._findAvatar();
-        while (!avatar && new Date().getTime() - t0 < sgs.TIMEOUT.page) {
-            sleep(800);
-            avatar = this._findAvatar();
-        }
-        if (!avatar) throw new Error("未识别到小乔头像");
-        v.clickRect(avatar);
-        sgs.log.i("已点击小乔头像");
-        if (!v.waitText(this.TAB_TEXT, this.TAB_REGION, sgs.TIMEOUT.page)) {
-            throw new Error("点击头像后未确认助手面板");
-        }
-        sgs.log.i("小乔助手面板已打开");
+        v.clickPointAt(this.AVATAR_POINT[0], this.AVATAR_POINT[1]);
+        sgs.log.i("已点击小乔头像 (" + this.AVATAR_POINT[0] + "," + this.AVATAR_POINT[1] + ") 匹配点 " + avatar.x + "," + avatar.y);
+        sleep(1800);
     },
 
     _openDailyTab: function () {
         var v = sgs.vision;
         for (var t = 1; t <= 3; t++) {
-            if (!v.hasText(this.TAB_TEXT, this.TAB_REGION)) {
-                throw new Error("找不到「日常功能」Tab");
-            }
             v.tapRect(this.TAB_REGION);
             sgs.log.i("点击「日常功能」Tab（第 " + t + " 轮）");
-            var btn = v.waitImage(this.KAIQI, sgs.TIMEOUT.page, this.KAIQI_REGION, this.KAIQI_TH);
-            if (btn) return btn;
+            sleep(1500);
+            var btn = v.waitImage(this.KAIQI, 4000, this.KAIQI_REGION, this.KAIQI_TH);
+            if (btn) { sgs.log.i("已识别到「开启」按钮"); return btn; }
+            sgs.log.w("第 " + t + " 轮图识别未命中");
         }
-        throw new Error("连续 3 次未出现开启按钮");
+        sgs.log.w("图识别 3 轮均失败，改用固定坐标 " + this.KAIQI_POINT);
+        return { x: this.KAIQI_POINT[0], y: this.KAIQI_POINT[1] };
     },
 
     _closeResult: function () {
@@ -643,10 +762,10 @@ sgs.tasks.xiaoqiao = {
         }
 
         // 2) 旧版「执行完成」结果窗
-        for (var c = 1; c <= 3 && v.hasText("执行完成", this.COMPLETION_REGION); c++) {
+        for (var c = 1; c <= 3 && this._done(); c++) {
             v.clickPointAt(this.RESULT_CLOSE[0], this.RESULT_CLOSE[1]);
             var d3 = new Date().getTime();
-            while (new Date().getTime() - d3 < sgs.TIMEOUT.ui && v.hasText("执行完成", this.COMPLETION_REGION)) sleep(700);
+            while (new Date().getTime() - d3 < sgs.TIMEOUT.ui && this._done()) sleep(700);
         }
 
         // 3) 助手面板金色 X
@@ -675,7 +794,7 @@ sgs.tasks.xiaoqiao = {
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
 
-        v.clickRect(btn);
+        v.clickPointAt(this.KAIQI_POINT[0], this.KAIQI_POINT[1]);
         sgs.log.i("已点击「开启」，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
 
@@ -687,7 +806,7 @@ sgs.tasks.xiaoqiao = {
                 this._closeResult();
                 return;
             }
-            if (v.hasText("执行完成", this.COMPLETION_REGION)) {
+            if (this._done()) {
                 sgs.log.i("识别到「执行完成」绿条");
                 this._closeResult();
                 return;
@@ -705,6 +824,31 @@ sgs.tasks.xiaoqiao = {
             sleep(Math.min(this.POLL_MS, remain > 0 ? remain : 1));
         }
         throw new Error("未识别到完成信号");
+    }
+};
+
+// 诊断任务：查看结果区 OCR 原文与颜色
+sgs.tasks.diag = {
+    id: "diag", name: "诊断",
+    run: function () {
+        var v = sgs.vision;
+        var im = v.frame(true);
+        sgs.log.i("[diag] 帧 " + im.getWidth() + "x" + im.getHeight() + " scale=" + JSON.stringify(v._scale));
+        var zones = {
+            big: [860, 1060, 1980, 1165],
+            tight: [1280, 1075, 1460, 1145],
+            small: [1190, 1070, 1580, 1155]
+        };
+        for (var k in zones) {
+            try { sgs.log.i("[diag] " + k + " 原文=「" + v.ocrRect(zones[k], im) + "」"); }
+            catch (e) { sgs.log.e("[diag] " + k + " 异常 " + e); }
+        }
+        try {
+            var b = [860, 1060, 1980, 1165];
+            var c = images.clip(im, b[0], b[1], b[2] - b[0], b[3] - b[1]);
+            var p = images.findColor(c, "#3CC83C", { threshold: 80 });
+            sgs.log.i("[diag] 绿色命中 " + (p ? p.x + "," + p.y : "null"));
+        } catch (e2) { sgs.log.e("[diag] findColor 异常 " + e2); }
     }
 };
 
@@ -1211,7 +1355,7 @@ sgs.ui = {
                 toast(label + " 完成 " + cost + "s");
                 self._lastResult = label + " " + cost + "s ✓";
             } catch (e) {
-                sgs.log.e("任务异常: " + e);
+                sgs.log.e("任务异常: " + e + " || stack=" + (e && e.stack ? e.stack : "-"));
                 toast("异常: " + e);
                 self._lastResult = "上次失败 ✗";
             } finally {
@@ -1312,6 +1456,23 @@ try {
 
 sgs.log.i("step2 截图权限");
 try {
+    // 画布方向只在进程内「首次」申请时生效（之后重复 requestScreenCapture 会忽略方向参数），
+    // 所以必须先让横屏的游戏进入前台，再申请截图。
+    var __cur = "";
+    try { __cur = currentPackage(); } catch (__e0) { __cur = ""; }
+    if (__cur !== "com.sanguosha.mjz.mi") {
+        sgs.log.i("前台 " + __cur + "，先拉起游戏再申请截图");
+        try { app.launchPackage("com.sanguosha.mjz.mi"); } catch (__e1) { }
+    }
+    var __land = false;
+    for (var __i = 0; __i < 6 && !__land; __i++) {
+        sleep(2000);
+        try {
+            __land = (context.getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+        } catch (__e2) { __land = (device.width > device.height); }
+    }
+    sgs.log.i("横屏确认 land=" + __land);
     var okCap = sgs.vision.init();
     sgs.log.i("截图权限 " + okCap);
 } catch (e2) {
@@ -1354,6 +1515,9 @@ threads.start(function () {
                 sgs.ui.stopAll();
             } else if (cmd.indexOf("shot") == 0) {
                 sgs.pushShot();
+            } else if (cmd.indexOf("diag") == 0) {
+                try { sgs.tasks.diag.run(); } catch (ed) { sgs.log.e("diag 失败 " + ed); }
+                sgs.pushLog();
             } else if (cmd.indexOf("ball") == 0) {
                 sgs.ui.ballView = null;
                 sgs.ui.showBall();
@@ -1383,7 +1547,7 @@ threads.start(function () {
                 try {
                     sgs.log.i("reload step1 拉取代码");
                     sgs.pushLog();
-                    var nr = http.get(sgs.PC + "/src/main.js", { timeout: 25000 });
+                    var nr = http.get(sgs.PC + "/src/main.js?t=" + new Date().getTime(), { timeout: 25000 });
                     var ncode = nr.body.string();
                     sgs.log.i("reload step2 拿到 " + ncode.length + " 字节");
                     sgs.pushLog();

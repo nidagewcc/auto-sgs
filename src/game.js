@@ -8,19 +8,29 @@ sgs.game = {
     ensure: function (maxMs) {
         maxMs = maxMs || 120000;
         var v = sgs.vision;
+
+        // 关键：游戏是横屏 app。必须先把游戏拉到前台再申请截图，
+        // 否则脚本在 AutoX 竖屏界面启动，画布会被建成 1280x2772，之后永远错位。
+        var cur = "";
+        try { cur = currentPackage(); } catch (e) { cur = ""; }
+        if (cur !== this.PKG) {
+            sgs.log.i("前台 " + cur + "，先拉起游戏 " + this.PKG);
+            try { app.launchPackage(this.PKG); } catch (e) { sgs.log.e("启动失败 " + e); }
+            sleep(4000);
+        }
+
+        // 按当前（游戏横屏）方向重建画布
+        v._capOk = false;
+        v.reset();
+        v._landForce = false;
         if (!v.init()) throw new Error("截图权限失败");
 
-        // 先探一帧：已经在主城就直接返回（currentPackage 在该机上不可靠）
         var im = v.frame(true);
         if (im && v.isHome(im)) {
             sgs.log.i("已在主城，无需拉起");
             return true;
         }
-
-        var cur = "";
-        try { cur = currentPackage(); } catch (e) { cur = ""; }
-        sgs.log.i("前台 " + cur + "，拉起游戏 " + this.PKG);
-        try { app.launchPackage(this.PKG); } catch (e) { sgs.log.e("启动失败 " + e); }
+        sgs.log.i("游戏已在前台，等待主城");
         return this.waitHome(maxMs);
     },
 
@@ -51,9 +61,10 @@ sgs.game = {
                 notLand++;
                 sgs.log.i("第" + n + "次 竖屏画布 " + w + "x" + h + "（连续" + notLand + "）");
                 if (notLand >= 3) {
-                    sgs.log.i("重新申请横屏截图");
+                    sgs.log.i("重新申请横屏截图（强制横屏）");
                     v._capOk = false;
                     v.reset();
+                    v._landForce = true;
                     v.init();
                     notLand = 0;
                 }

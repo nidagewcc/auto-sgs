@@ -498,7 +498,7 @@ sgs.ui = {
                 toast(label + " 完成 " + cost + "s");
                 self._lastResult = label + " " + cost + "s ✓";
             } catch (e) {
-                sgs.log.e("任务异常: " + e);
+                sgs.log.e("任务异常: " + e + " || stack=" + (e && e.stack ? e.stack : "-"));
                 toast("异常: " + e);
                 self._lastResult = "上次失败 ✗";
             } finally {
