@@ -1,0 +1,17 @@
+# 运行日志与回传截图（体积大，不入库）
+_logs/
+*.log
+
+# 安装包 / 下载物料
+_dl/
+*.apk
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/

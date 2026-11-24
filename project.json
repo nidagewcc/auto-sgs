@@ -1,0 +1,7 @@
+{
+  "name": "auto-sgs",
+  "versionName": "1.0.0",
+  "versionCode": 1,
+  "packageName": "com.sgs.autotask",
+  "main": "main.js"
+}
