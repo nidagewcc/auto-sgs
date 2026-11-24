@@ -7,7 +7,8 @@ java.lang.NullPointerException: RhinoJavaScriptEngine.getRuntime() on null objec
 import io
 import os
 
-BASE = r"D:\develops\auto-sgs"
+# 项目根 = 本文件所在目录的上一级（tools/build.py -> 项目根），换机器不用改路径
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(BASE, "build")
 OUT = os.path.join(OUT_DIR, "bundle.js")
 
@@ -65,6 +66,20 @@ RUNNER = u"""// ===== 启动（分步执行，每步单独 catch，便于定位�
 sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) + " ===");
 try { sgs.log.i(device.brand + " " + device.model + " / Android " + device.release); } catch (e0) { }
 
+// step1 清理残留引擎：重复 bootstrap 会留下多个引擎抢 /cmd，只保留自己
+try {
+    var __mine = engines.myEngine();
+    var __all = engines.all();
+    var __killed = 0;
+    for (var __i = 0; __i < __all.length; __i++) {
+        try {
+            var __en = __all[__i].getEngine();
+            if (__en && __en.getId() != __mine.getId()) { __en.forceStop(); __killed++; }
+        } catch (__eq) { }
+    }
+    sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
+} catch (__ec) { }
+
 sgs.log.i("step2 截图权限");
 try {
     var okCap = sgs.vision.init();
@@ -87,7 +102,14 @@ sgs.log.i("step4 截图自检");
 try { sleep(4000); sgs.pushShot(); } catch (e4) { sgs.log.e("pushShot 失败 " + e4); }
 
 // 常驻心跳：推日志 + 拉电脑端指令（3 秒一次），这样电脑可以直接指挥手机，不用人点
-setInterval(function () {
+var __hb = 0;
+threads.start(function () {
+  while (true) {
+    sleep(3000);
+    __hb++;
+    if (__hb % 20 == 0) {
+        try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
+    }
     try { sgs.pushLog(); } catch (e) { }
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });
@@ -167,7 +189,8 @@ setInterval(function () {
             sgs.pushLog();
         }
     } catch (e) { }
-}, 3000);
+  }
+});
 }
 """
 

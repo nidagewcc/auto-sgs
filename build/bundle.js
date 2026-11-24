@@ -88,14 +88,14 @@ sgs.vision = {
     init: function () {
         if (this._capOk) return true;
         try {
+            var land = false;
             try {
-                this._capOk = requestScreenCapture(true);
-                log("[vision] 横屏截图已申请");
-            } catch (eLand) {
-                this._capOk = requestScreenCapture();
-                log("[vision] 横屏失败，退回默认 " + eLand);
-            }
-            sleep(800);
+                var ori = context.getResources().getConfiguration().orientation;
+                land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+            } catch (eo) { land = (device.width > device.height); }
+            this._capOk = requestScreenCapture(land);
+            log("[vision] 申请截图 land=" + land + " 结果=" + this._capOk);
+            sleep(500);
             return this._capOk;
         } catch (e) {
             log("[vision] 截图权限异常 " + e);
@@ -331,6 +331,7 @@ sgs.game = {
 // ===== src/tasks/playerinfo.js =====
 
 // tasks/playerinfo.js —— 玩家信息读取（AutoX 移植版）
+// 稳定性改造：一个字段连取多帧 OCR 后投票，解决 level 偶发读成 920/20、昵称「血→合」这类抖动
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 sgs.tasks = sgs.tasks || {};
 
@@ -338,7 +339,7 @@ sgs.tasks.playerinfo = {
     id: "playerinfo",
     name: "玩家信息读取",
 
-    // 主城可直接读到的 6 个字段；level 需点头像开弹窗，单独处理
+    // 主城可直接读到的 7 个字段
     FIELDS: [
         { key: "nickname", parser: "text" },
         { key: "level", parser: "level" },
@@ -349,50 +350,105 @@ sgs.tasks.playerinfo = {
         { key: "jade", parser: "int" }
     ],
 
+    // 这些字段历史上抖动过，多帧投票；其余单帧即可
+    UNSTABLE: { level: 1, nickname: 1, physical: 1, energy: 1 },
+
+    SAMPLES: 3,
+
     run: function () {
         var v = sgs.vision;
         var roi = sgs.ROI.playerInfo;
         var out = {};
 
         if (!v.init()) throw new Error("截图权限获取失败");
-        var img = v.frame(true);
-        if (!img) throw new Error("截图失败");
-        sgs.log.i("画面 " + img.getWidth() + "x" + img.getHeight());
+
+        // 先连取 SAMPLES 帧：第 1 帧给所有字段，后两帧只补不稳定字段
+        var imgs = [];
+        for (var k = 0; k < this.SAMPLES; k++) {
+            var f = v.frame(true);
+            if (f) imgs.push(f);
+            if (k < this.SAMPLES - 1) sleep(220);
+        }
+        if (!imgs.length) throw new Error("截图失败");
+        var img = imgs[0];
+        sgs.log.i("画面 " + img.getWidth() + "x" + img.getHeight() + " / 取帧 " + imgs.length);
 
         for (var i = 0; i < this.FIELDS.length; i++) {
-            var f = this.FIELDS[i];
-            var rect = roi[f.key];
-            var raw = v.ocrRect(rect, img);
-            var parsed = this._parse(f.parser, raw);
-            out[f.key] = { raw: raw, value: parsed };
-            if (parsed === null) {
-                sgs.log.e(f.key + " 解析失败 原文=[" + raw + "]");
+            var fd = this.FIELDS[i];
+            var rect = roi[fd.key];
+            var tries = this.UNSTABLE[fd.key] ? imgs.length : 1;
+            var raws = [];
+            var vals = [];
+            for (var t = 0; t < tries; t++) {
+                var raw = v.ocrRect(rect, imgs[t]);
+                raws.push(raw);
+                vals.push(this._parse(fd.parser, raw));
+            }
+            var chosen = this._pick(fd.parser, vals, raws);
+            out[fd.key] = { raw: chosen.raw, value: chosen.value, samples: raws };
+            if (chosen.value === null) {
+                sgs.log.e(fd.key + " 解析失败 原文=" + JSON.stringify(raws));
             } else {
-                sgs.log.i(f.key + " = " + JSON.stringify(parsed) + "  原文=[" + raw + "]");
+                sgs.log.i(fd.key + " = " + JSON.stringify(chosen.value) + " 原文=" + JSON.stringify(raws));
             }
         }
         return out;
     },
 
+    /** 多帧投票选值：票多者胜；level 平票时取位数多的 */
+    _pick: function (type, vals, raws) {
+        var cnt = {}, first = {};
+        for (var i = 0; i < vals.length; i++) {
+            if (vals[i] === null) continue;
+            var key = JSON.stringify(vals[i]);
+            cnt[key] = (cnt[key] || 0) + 1;
+            if (!first[key]) first[key] = { value: vals[i], raw: raws[i] };
+        }
+        var keys = [];
+        for (var kk in cnt) { if (cnt.hasOwnProperty(kk)) keys.push(kk); }
+        if (!keys.length) return { value: null, raw: raws.length ? raws[0] : "" };
+
+        var bestKey = keys[0];
+        for (var j = 1; j < keys.length; j++) {
+            var kj = keys[j];
+            if (cnt[kj] > cnt[bestKey]) { bestKey = kj; continue; }
+            if (cnt[kj] < cnt[bestKey]) continue;
+            if (type === "level") {
+                var lj = String(first[kj].value).length;
+                var lb = String(first[bestKey].value).length;
+                if (lj > lb) bestKey = kj;
+            }
+        }
+        return first[bestKey];
+    },
+
     _parse: function (type, raw) {
         var s = String(raw == null ? "" : raw).replace(/^\s+|\s+$/g, "");
         if (type === "text") return s === "" ? null : s;
+
         if (type === "level") {
-            // 等级上限三位数；OCR 常把「级」认成 2/1，多末尾一位就丢尾
-            var m0 = s.replace(/\s+/g, "").match(/\d+/);
+            // 「120级」常被认成 920 / 20 / 12093：去空白、统一「級」、只取首段 1~4 位数字再截 3 位
+            var t0 = s.replace(/\s+/g, "").replace(/級/g, "级");
+            var m0 = t0.match(/(\d{1,4})/);
             if (!m0) return null;
-            var v0 = m0[0];
-            if (v0.length > 3) v0 = v0.substring(0, 3);
-            return parseInt(v0, 10);
+            var n0 = m0[1];
+            if (n0.length > 3) n0 = n0.substring(0, 3);
+            var i0 = parseInt(n0, 10);
+            if (isNaN(i0) || i0 <= 0) return null;
+            return i0;
         }
+
         if (type === "int") {
             var m1 = s.replace(/[,\s]/g, "").match(/(\d+)/);
             return m1 ? parseInt(m1[1], 10) : null;
         }
+
         if (type === "fraction") {
+            // 「精力32/30」这类前后带字的原文也能取到数字对
             var m2 = s.replace(/\s+/g, "").match(/(\d+)\s*\/\s*(\d+)/);
             return m2 ? { current: parseInt(m2[1], 10), max: parseInt(m2[2], 10) } : null;
         }
+
         return s === "" ? null : s;
     }
 };
@@ -655,31 +711,37 @@ sgs.tasks.xiaoqiao = {
 
 // ===== src/ui.js =====
 
-// ui.js —— 悬浮球 / 控制面板
-// 纯 Java View + WindowManager 直挂（floaty 在本机 eval 环境会 NPE）
-// 颜色统一走 hex()，避免 Rhino 把 0xFFxxxxxx 当大数传给 int 参数溢出
+// ui.js —— 悬浮球 / 快捷圆盘 / 完整面板
+// 纯 Java View + WindowManager 直挂（floaty 在本机不可用，会 NPE）
+// 颜色统一走 hex()：Rhino 把 0xFFxxxxxx 当大数传 int 会溢出，必须转有符号 int
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 
 sgs.ui = {
-    _wm: null,
-    _main: null,
-    _ctx: null,
-    dp: 1,
+    _wm: null, _main: null, _ctx: null, dp: 1,
 
-    ballView: null,
-    ballLp: null,
-    panelView: null,
-    _statusTv: null,
-    _thread: null,
-    _t0: 0,
+    ballView: null, ballLp: null,
+    dockView: null,
+    panelView: null, _statusTv: null, _logTv: null,
+
+    _thread: null, _t0: 0, _tick: null, _lastResult: "",
+
+    C: {
+        ballOff: "FF121821", ballOn: "FF3A2410",
+        gold: "FFE8B349", goldDim: "FF7C6027",
+        bg: "FF0B0F14", card: "FF161C24", line: "FF232B35",
+        text: "FFEDF1F5", sub: "FF8A94A2",
+        ok: "FF3DDC84", busy: "FFFF9A3C", danger: "FFE05555"
+    },
 
     TASKS: [
-        { id: "playerinfo", icon: "人", title: "读取玩家信息", desc: "昵称 · 等级 · 战力 · 资源", color: "FF2B5C9E" },
-        { id: "mail", icon: "邮", title: "邮件全部领取", desc: "领完并关闭弹窗回主城", color: "FF356B4E" },
-        { id: "xiaoqiao", icon: "乔", title: "小乔 · 一键日常", desc: "开启日常并等完成（会耗元宝）", color: "FF7A5128" },
-        { id: "shot", icon: "图", title: "截屏回传", desc: "把当前画面发到电脑", color: "FF4A4A55" }
+        { id: "playerinfo", icon: "人", title: "读取玩家信息", desc: "昵称 · 等级 · 战力 · 资源", color: "FF2B6CB0" },
+        { id: "mail", icon: "邮", title: "邮件全部领取", desc: "领完并关闭弹窗回主城", color: "FF2F7A57" },
+        { id: "xiaoqiao", icon: "乔", title: "小乔 · 一键日常", desc: "开启日常并等完成（耗元宝）", color: "FF6C4FA8" },
+        { id: "daily", icon: "全", title: "一键日常", desc: "邮件 → 小乔，依次跑完", color: "FFB8862B" },
+        { id: "shot", icon: "图", title: "截屏回传", desc: "把当前画面发到电脑", color: "FF46566B" }
     ],
 
+    // ---------------- 基础设施 ----------------
     _init: function () {
         this._ctx = context;
         this.dp = context.getResources().getDisplayMetrics().density;
@@ -693,7 +755,7 @@ sgs.ui = {
             this._main.post(new java.lang.Runnable({
                 run: function () {
                     try { fn(); } catch (e) {
-                        try { sgs.log.e("UI异常 " + e); sgs.pushLog(); } catch (e2) { }
+                        try { sgs.log.e("UI异常 " + e); } catch (e2) { }
                     }
                 }
             }));
@@ -710,14 +772,14 @@ sgs.ui = {
         return v;
     },
 
-    _lp: function (w, h, x, y) {
+    _lp: function (w, h, x, y, gravity) {
         var lp = new android.view.WindowManager.LayoutParams();
         lp.type = android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
         lp.format = android.graphics.PixelFormat.RGBA_8888;
         lp.flags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            | android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-        // 用 BOTTOM|END 对齐，屏幕横竖切换时位置自动跟着走
-        lp.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.END;
+            | android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            | android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        lp.gravity = gravity || (android.view.Gravity.BOTTOM | android.view.Gravity.END);
         lp.x = x; lp.y = y;
         lp.width = w; lp.height = h;
         return lp;
@@ -741,6 +803,7 @@ sgs.ui = {
         tv.setText(txt);
         tv.setTextSize(sizeSp);
         tv.setTextColor(this.hex(colorHex));
+        tv.setIncludeFontPadding(false);
         tv.setGravity(android.view.Gravity.CENTER_VERTICAL);
         if (bold) tv.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         return tv;
@@ -748,53 +811,62 @@ sgs.ui = {
 
     _v: function (w, h) {
         var v = new android.view.View(this._ctx);
-        var lp = new android.widget.LinearLayout.LayoutParams(w, h);
+        v.setLayoutParams(new android.widget.LinearLayout.LayoutParams(w, h));
+        return v;
+    },
+
+    _margins: function (v, l, t, r, b) {
+        var lp = v.getLayoutParams();
+        if (!lp) lp = new android.widget.LinearLayout.LayoutParams(-2, -2);
+        lp.setMargins(this.px(l), this.px(t), this.px(r), this.px(b));
         v.setLayoutParams(lp);
         return v;
     },
 
-    // ---------------- 球 ----------------
+    // ---------------- 悬浮球 ----------------
     showBall: function () {
         if (!this._ctx) this._init();
-        if (this.ballView) return;
         var self = this;
+        if (this.ballView) { this.hideBall(); }
 
         var tv = new android.widget.TextView(this._ctx);
         tv.setText("三");
-        tv.setTextSize(21);
-        tv.setTextColor(this.hex("FFFFFFFF"));
+        tv.setTextSize(19);
+        tv.setTextColor(this.hex("FFF2E2C0"));
         tv.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         tv.setGravity(android.view.Gravity.CENTER);
-        tv.setBackground(this._shape("FF1B6FD4", "FF7FB3F0", 2, -1));
-        tv.setElevation(this.px(8));
+        tv.setIncludeFontPadding(false);
+        tv.setBackground(this._shape(this.C.bg, this.C.gold, 1.5, -1));
+        tv.setElevation(this.px(6));
 
-        var size = this.px(62);
-        // 贴右下角：x/y 是相对 BOTTOM|END 的偏移（负值向内）
-        var lp = this._lp(size, size, -this.px(14), -this.px(150));
+        var size = this.px(54);
+        var lp = this._lp(size, size, this.px(6), this.px(150));
         this.ballLp = lp;
 
-        // 拖动 + 点击（END 方向下 dx 需要反号）
-        var startX = 0, startY = 0, baseX = lp.x, baseY = lp.y, moved = false;
+        var sx = 0, sy = 0, bx = lp.x, by = lp.y, moved = false, tDown = 0;
         tv.setOnTouchListener(new android.view.View.OnTouchListener({
             onTouch: function (v, ev) {
                 var act = ev.getAction();
                 if (act == 0) {
-                    startX = ev.getRawX();
-                    startY = ev.getRawY();
-                    baseX = self.ballLp.x;
-                    baseY = self.ballLp.y;
-                    moved = false;
+                    sx = ev.getRawX(); sy = ev.getRawY();
+                    bx = self.ballLp.x; by = self.ballLp.y;
+                    moved = false; tDown = new Date().getTime();
+                    v.setAlpha(0.75);
                     return true;
                 } else if (act == 2) {
-                    var dx = ev.getRawX() - startX;
-                    var dy = ev.getRawY() - startY;
-                    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) moved = true;
-                    self.ballLp.x = Math.round(baseX - dx);
-                    self.ballLp.y = Math.round(baseY - dy);
+                    var dx = ev.getRawX() - sx, dy = ev.getRawY() - sy;
+                    if (Math.abs(dx) > 14 || Math.abs(dy) > 14) moved = true;
+                    self.ballLp.x = Math.round(bx - dx);
+                    self.ballLp.y = Math.round(by - dy);
                     try { self._wm.updateViewLayout(v, self.ballLp); } catch (e) { }
                     return true;
-                } else if (act == 1) {
-                    if (!moved) self.togglePanel();
+                } else if (act == 1 || act == 3) {
+                    v.setAlpha(1.0);
+                    if (!moved) {
+                        var held = new Date().getTime() - tDown;
+                        if (held > 480) { self.hideDock(); self.showPanel(); }
+                        else { self.toggleDock(); }
+                    }
                     return true;
                 }
                 return false;
@@ -802,146 +874,262 @@ sgs.ui = {
         }));
 
         this.ballView = tv;
-        this._post(function () { self._wm.addView(tv, lp); });
+        this._post(function () {
+            try { self._wm.addView(tv, lp); } catch (e) { sgs.log.e("加球失败 " + e); }
+        });
         sgs.log.i("悬浮球已显示");
     },
 
-    // ---------------- 面板 ----------------
-    togglePanel: function () {
-        if (this.panelView) { this.hidePanel(); } else { this.showPanel(); }
+    hideBall: function () {
+        var v = this.ballView;
+        if (!v) return;
+        this.ballView = null;
+        var self = this;
+        this._post(function () { try { self._wm.removeView(v); } catch (e) { } });
     },
 
-    hidePanel: function () {
-        if (!this.panelView) return;
+    _paintBall: function (busy) {
+        var v = this.ballView;
+        if (!v) return;
         var self = this;
-        var v = this.panelView;
-        this.panelView = null;
-        this._statusTv = null;
         this._post(function () {
-            try { self._wm.removeView(v); } catch (e) { }
+            try {
+                v.setBackground(self._shape(busy ? self.C.ballOn : self.C.bg, busy ? self.C.busy : self.C.gold, 1.5, -1));
+            } catch (e) { }
         });
     },
 
+    // ---------------- 快捷圆盘（轻点球）----------------
+    toggleDock: function () {
+        if (this.dockView) this.hideDock(); else this.showDock();
+    },
+
+    hideDock: function () {
+        var v = this.dockView;
+        if (!v) return;
+        this.dockView = null;
+        var self = this;
+        this._post(function () { try { self._wm.removeView(v); } catch (e) { } });
+    },
+
+    showDock: function () {
+        if (!this._ctx) this._init();
+        var self = this;
+        if (this.dockView) return;
+        if (this.panelView) { this.hidePanel(); return; }
+
+        var W = this.px(210);
+        var root = new android.widget.LinearLayout(this._ctx);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        root.setBackground(this._shape(this.C.bg, this.C.goldDim, 1, 14));
+        root.setPadding(this.px(8), this.px(8), this.px(8), this.px(8));
+        root.setElevation(this.px(10));
+
+        // 第一行：三个任务
+        root.addView(this._dockRow([this.TASKS[0], this.TASKS[1], this.TASKS[2]]));
+        // 第二行：一键日常 / 截图 / 更多
+        var row2 = this._dockRow([this.TASKS[3], this.TASKS[4], null]);
+        root.addView(row2);
+
+        var lp = this._lp(W, -2, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
+        this.dockView = root;
+        this._post(function () {
+            try { self._wm.addView(root, lp); } catch (e) { sgs.log.e("加圆盘失败 " + e); }
+        });
+        sgs.log.i("快捷圆盘已展开");
+    },
+
+    _dockRow: function (items) {
+        var self = this;
+        var row = new android.widget.LinearLayout(this._ctx);
+        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        var lp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, 0, 0, this.px(6));
+        row.setLayoutParams(lp);
+
+        for (var i = 0; i < items.length; i++) {
+            var t = items[i];
+            var cell = new android.widget.LinearLayout(this._ctx);
+            cell.setOrientation(android.widget.LinearLayout.VERTICAL);
+            cell.setGravity(android.view.Gravity.CENTER);
+            cell.setBackground(this._shape(t ? this.C.card : this.C.card, this.C.line, 1, 10));
+            cell.setPadding(this.px(4), this.px(6), this.px(4), this.px(6));
+            cell.setClickable(true);
+            var cw = this.px(60);
+            var clp = new android.widget.LinearLayout.LayoutParams(cw, this.px(52));
+            if (i > 0) clp.setMargins(this.px(6), 0, 0, 0);
+            cell.setLayoutParams(clp);
+
+            if (t) {
+                var icon = this._tv(t.icon, 13, "FFFFFFFF", true);
+                icon.setGravity(android.view.Gravity.CENTER);
+                icon.setBackground(this._shape(t.color, null, 1, -1));
+                var ilp = new android.widget.LinearLayout.LayoutParams(this.px(26), this.px(26));
+                icon.setLayoutParams(ilp);
+                cell.addView(icon);
+
+                var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
+                lbl.setGravity(android.view.Gravity.CENTER);
+                var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+                llp.setMargins(0, this.px(5), 0, 0);
+                lbl.setLayoutParams(llp);
+                cell.addView(lbl);
+
+                cell.setOnClickListener(new android.view.View.OnClickListener({
+                    onClick: function (v) {
+                        if (self.isBusy()) { toast("任务执行中"); return; }
+                        self.hideDock();
+                        self.runTask(t.id, t.title);
+                    }
+                }));
+            } else {
+                var more = this._tv("⋯", 16, this.C.gold, true);
+                more.setGravity(android.view.Gravity.CENTER);
+                more.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+                cell.addView(more);
+                var mlbl = this._tv("更多", 9, this.C.sub, false);
+                mlbl.setGravity(android.view.Gravity.CENTER);
+                var mlp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+                mlp.setMargins(0, this.px(5), 0, 0);
+                mlbl.setLayoutParams(mlp);
+                cell.addView(mlbl);
+
+                cell.setOnClickListener(new android.view.View.OnClickListener({
+                    onClick: function (v) { self.hideDock(); self.showPanel(); }
+                }));
+            }
+            row.addView(cell);
+        }
+        return row;
+    },
+
+    // ---------------- 完整面板（长按球）----------------
     showPanel: function () {
         if (!this._ctx) this._init();
         var self = this;
-        var W = this.px(258);
+        if (this.panelView) { this.hidePanel(); return; }
 
-        // 外层卡片
+        var W = this.px(250);
         var root = new android.widget.LinearLayout(this._ctx);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
-        root.setBackground(this._shape("FF14171C", "FF333A44", 1, 16));
-        root.setPadding(this.px(12), this.px(12), this.px(12), this.px(12));
-        root.setElevation(this.px(10));
+        root.setBackground(this._shape(this.C.bg, this.C.goldDim, 1, 14));
+        root.setPadding(this.px(11), this.px(10), this.px(11), this.px(10));
+        root.setElevation(this.px(12));
 
         // 标题行
         var head = new android.widget.LinearLayout(this._ctx);
         head.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
-        var dot = this._v(this.px(8), this.px(8));
-        dot.setBackground(this._shape(this.isBusy() ? "FFFF8B3D" : "FF3DDC84", null, 1, -1));
-        var lpDot = new android.widget.LinearLayout.LayoutParams(this.px(8), this.px(8));
-        lpDot.setMargins(0, 0, this.px(7), 0);
-        dot.setLayoutParams(lpDot);
+        var dot = this._v(this.px(7), this.px(7));
+        dot.setBackground(this._shape(this.isBusy() ? this.C.busy : this.C.ok, null, 1, -1));
+        this._margins(dot, 0, 0, 7, 0);
         head.addView(dot);
 
-        var title = this._tv("名将传 · 助手", 15, "FFF5F7FA", true);
-        head.addView(title);
+        head.addView(this._tv("名将传 · 助手", 14, this.C.text, true));
 
-        var status = this._tv(this.isBusy() ? "运行中" : "空闲", 11, "FF8C97A5", false);
-        var lpSt = new android.widget.LinearLayout.LayoutParams(0, -2, 1);
-        lpSt.setMargins(this.px(8), 0, 0, 0);
-        status.setLayoutParams(lpSt);
-        head.addView(status);
-        this._statusTv = status;
+        var st = this._tv(this.isBusy() ? "运行中" : "空闲", 10, this.C.sub, false);
+        var slp = new android.widget.LinearLayout.LayoutParams(0, -2, 1);
+        slp.setMargins(this.px(8), 0, 0, 0);
+        st.setLayoutParams(slp);
+        head.addView(st);
+        this._statusTv = st;
 
-        var close = this._tv("✕", 16, "FF9AA5B1", false);
+        var close = this._tv("✕", 15, this.C.sub, false);
         close.setGravity(android.view.Gravity.CENTER);
-        var lpC = new android.widget.LinearLayout.LayoutParams(this.px(30), this.px(30));
-        close.setLayoutParams(lpC);
+        close.setLayoutParams(new android.widget.LinearLayout.LayoutParams(this.px(28), this.px(28)));
         close.setClickable(true);
         close.setOnClickListener(new android.view.View.OnClickListener({
             onClick: function (v) { self.hidePanel(); }
         }));
         head.addView(close);
-
         root.addView(head);
 
-        // 细分隔线
         var line = this._v(-1, this.px(1));
-        line.setBackgroundColor(this.hex("FF262C35"));
-        var lpLine = new android.widget.LinearLayout.LayoutParams(-1, this.px(1));
-        lpLine.setMargins(0, this.px(10), 0, this.px(4));
-        line.setLayoutParams(lpLine);
+        line.setBackgroundColor(this.hex(this.C.line));
+        this._margins(line, 0, 8, 0, 2);
         root.addView(line);
 
         // 任务行
-        for (var i = 0; i < this.TASKS.length; i++) {
-            root.addView(this._row(this.TASKS[i]));
-        }
+        for (var i = 0; i < this.TASKS.length; i++) root.addView(this._row(this.TASKS[i]));
 
-        // 停止按钮
-        var stop = this._tv("停止当前任务", 14, "FFFFD9D9", true);
+        // 日志区
+        var logBox = new android.widget.LinearLayout(this._ctx);
+        logBox.setOrientation(android.widget.LinearLayout.VERTICAL);
+        logBox.setBackground(this._shape(this.C.card, this.C.line, 1, 10));
+        logBox.setPadding(this.px(8), this.px(6), this.px(8), this.px(6));
+        logBox.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        this._margins(logBox, 0, 8, 0, 0);
+
+        var logTv = this._tv(this._tailLog(), 9, this.C.sub, false);
+        logTv.setGravity(android.view.Gravity.LEFT);
+        logTv.setTypeface(android.graphics.Typeface.MONOSPACE);
+        logTv.setMaxLines(3);
+        logTv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        logBox.addView(logTv);
+        this._logTv = logTv;
+        root.addView(logBox);
+
+        // 停止
+        var stop = this._tv("停止当前任务", 13, "FFFFDCDC", true);
         stop.setGravity(android.view.Gravity.CENTER);
-        stop.setBackground(this._shape("FF5A2328", "FF8C3A41", 1, 10));
-        stop.setPadding(0, this.px(11), 0, this.px(11));
-        var lpS = new android.widget.LinearLayout.LayoutParams(-1, -2);
-        lpS.setMargins(0, this.px(10), 0, 0);
-        stop.setLayoutParams(lpS);
+        stop.setBackground(this._shape("FF3A1C1F", "FF7A343A", 1, 9));
+        stop.setPadding(0, this.px(10), 0, this.px(10));
+        stop.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        this._margins(stop, 0, 8, 0, 0);
         stop.setClickable(true);
         stop.setOnClickListener(new android.view.View.OnClickListener({
             onClick: function (v) { self.stopAll(); }
         }));
         root.addView(stop);
 
-        // 位置：面板出现在球上方偏左
-        var bx = this.ballLp ? this.ballLp.x : -this.px(14);
-        var by = this.ballLp ? this.ballLp.y : -this.px(150);
-        var px0 = bx - this.px(6);
-        var py0 = by - this.px(250);
-
-        var lpP = this._lp(W, -2, px0, py0);
+        var lp = this._lp(W, -2, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
         this.panelView = root;
-        this._post(function () { self._wm.addView(root, lpP); });
-        sgs.log.i("面板已展开");
+        this._post(function () {
+            try { self._wm.addView(root, lp); } catch (e) { sgs.log.e("加面板失败 " + e); }
+        });
+        this._startTick();
+        sgs.log.i("完整面板已展开");
     },
 
-    /** 单条任务行 */
+    hidePanel: function () {
+        this._stopTick();
+        var v = this.panelView;
+        if (!v) return;
+        this.panelView = null;
+        this._statusTv = null;
+        this._logTv = null;
+        var self = this;
+        this._post(function () { try { self._wm.removeView(v); } catch (e) { } });
+    },
+
     _row: function (t) {
         var self = this;
         var row = new android.widget.LinearLayout(this._ctx);
         row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        row.setBackground(this._shape("FF1C2129", "FF2A313B", 1, 10));
-        row.setPadding(this.px(10), this.px(9), this.px(10), this.px(9));
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setBackground(this._shape(this.C.card, this.C.line, 1, 9));
+        row.setPadding(this.px(9), this.px(8), this.px(9), this.px(8));
         row.setClickable(true);
-        var lp = new android.widget.LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, this.px(6), 0, 0);
-        row.setLayoutParams(lp);
+        row.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        this._margins(row, 0, 6, 0, 0);
 
-        // 图标块
-        var icon = this._tv(t.icon, 13, "FFFFFFFF", true);
+        var icon = this._tv(t.icon, 12, "FFFFFFFF", true);
         icon.setGravity(android.view.Gravity.CENTER);
-        icon.setBackground(this._shape(t.color, null, 1, 8));
-        var lpI = new android.widget.LinearLayout.LayoutParams(this.px(30), this.px(30));
-        icon.setLayoutParams(lpI);
+        icon.setBackground(this._shape(t.color, null, 1, 7));
+        icon.setLayoutParams(new android.widget.LinearLayout.LayoutParams(this.px(26), this.px(26)));
         row.addView(icon);
 
-        // 文字区
-        var txt = new android.widget.LinearLayout(this._ctx);
-        txt.setOrientation(android.widget.LinearLayout.VERTICAL);
-        var lp2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1);
-        lp2.setMargins(this.px(10), 0, this.px(6), 0);
-        txt.setLayoutParams(lp2);
+        var box = new android.widget.LinearLayout(this._ctx);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        var blp = new android.widget.LinearLayout.LayoutParams(0, -2, 1);
+        blp.setMargins(this.px(9), 0, this.px(5), 0);
+        box.setLayoutParams(blp);
+        box.addView(this._tv(t.title, 13, this.C.text, true));
+        box.addView(this._tv(t.desc, 9, this.C.sub, false));
+        row.addView(box);
 
-        var name = this._tv(t.title, 14, "FFF2F5F8", true);
-        txt.addView(name);
-
-        var desc = this._tv(t.desc, 10, "FF7E8894", false);
-        txt.addView(desc);
-
-        row.addView(txt);
-
-        var arrow = this._tv("›", 16, "FF6C7683", false);
+        var arrow = this._tv("›", 15, this.C.sub, false);
         arrow.setGravity(android.view.Gravity.CENTER);
         row.addView(arrow);
 
@@ -955,6 +1143,42 @@ sgs.ui = {
         return row;
     },
 
+    _tailLog: function () {
+        try {
+            var all = (typeof LOGS !== "undefined") ? LOGS : [];
+            var n = all.length;
+            var lines = [];
+            for (var i = Math.max(0, n - 3); i < n; i++) lines.push(String(all[i]).replace(/^\[[IE]\] /, ""));
+            return lines.length ? lines.join("\n") : "（暂无日志）";
+        } catch (e) { return "（日志不可用）"; }
+    },
+
+    // ---------------- 周期刷新 ----------------
+    _startTick: function () {
+        var self = this;
+        this._stopTick();
+        this._tick = setInterval(function () {
+            self._post(function () { self._refresh(); });
+        }, 900);
+    },
+
+    _stopTick: function () {
+        if (this._tick) { try { clearInterval(this._tick); } catch (e) { } this._tick = null; }
+    },
+
+    _refresh: function () {
+        var busy = this.isBusy();
+        if (this._statusTv) {
+            try {
+                this._statusTv.setText(busy ? "运行中" : (this._lastResult || "空闲"));
+                this._statusTv.setTextColor(this.hex(busy ? this.C.busy : this.C.sub));
+            } catch (e) { }
+        }
+        if (this._logTv) {
+            try { this._logTv.setText(this._tailLog()); } catch (e) { }
+        }
+    },
+
     // ---------------- 执行 ----------------
     isBusy: function () {
         if (!this._t0) return false;
@@ -964,7 +1188,9 @@ sgs.ui = {
     runTask: function (id, label) {
         var self = this;
         if (this.isBusy()) { toast("任务执行中"); return; }
+        if (id === "daily") { this.runDaily(label); return; }
         this._t0 = new Date().getTime();
+        this._paintBall(true);
         this._thread = threads.start(function () {
             var t0 = new Date().getTime();
             try {
@@ -973,6 +1199,7 @@ sgs.ui = {
                     sgs.pushShot();
                     sgs.log.i("=== 截屏已回传 ===");
                     toast("截图已上传");
+                    self._lastResult = "截图 " + Math.round((new Date().getTime() - t0) / 1000) + "s ✓";
                     return;
                 }
                 if (!sgs.game.ensure(120000)) throw new Error("未进入主城");
@@ -982,35 +1209,106 @@ sgs.ui = {
                 var cost = Math.round((new Date().getTime() - t0) / 1000);
                 sgs.log.i("=== " + label + " 完成 " + cost + "s ===");
                 toast(label + " 完成 " + cost + "s");
+                self._lastResult = label + " " + cost + "s ✓";
             } catch (e) {
                 sgs.log.e("任务异常: " + e);
                 toast("异常: " + e);
+                self._lastResult = "上次失败 ✗";
             } finally {
                 self._t0 = 0;
                 self._thread = null;
+                self._paintBall(false);
                 try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
-                sgs.ui.refreshLog();
+                try { sgs.pushLog(); } catch (e3) { }
+                self._post(function () { self._refresh(); });
+            }
+        });
+    },
+
+    /** 一键日常：邮件 → 小乔，各自独立 catch，一个失败不阻塞另一个 */
+    runDaily: function (label) {
+        var self = this;
+        if (this.isBusy()) { toast("任务执行中"); return; }
+        this._t0 = new Date().getTime();
+        this._paintBall(true);
+        this._thread = threads.start(function () {
+            var t0 = new Date().getTime();
+            var done = [], fail = [];
+            try {
+                sgs.log.i("=== 开始 一键日常 ===");
+                if (!sgs.game.ensure(120000)) throw new Error("未进入主城");
+
+                var steps = [
+                    { id: "mail", name: "邮件" },
+                    { id: "xiaoqiao", name: "小乔日常" }
+                ];
+                for (var i = 0; i < steps.length; i++) {
+                    var st = steps[i];
+                    try {
+                        sgs.log.i("--- 日常 " + (i + 1) + "/2：" + st.name + " ---");
+                        sgs.tasks[st.id].run();
+                        done.push(st.name);
+                    } catch (e) {
+                        sgs.log.e(st.name + " 失败: " + e);
+                        fail.push(st.name);
+                        try { sgs.pushShot(); } catch (e2) { }
+                    }
+                }
+
+                var cost = Math.round((new Date().getTime() - t0) / 1000);
+                var msg = "完成 " + done.length + "/2";
+                if (fail.length) msg += "，失败 " + fail.join("/");
+                sgs.log.i("=== 一键日常 " + msg + " " + cost + "s ===");
+                toast("一键日常 " + msg + " " + cost + "s");
+                self._lastResult = "日常 " + msg + " " + cost + "s";
+            } catch (e) {
+                sgs.log.e("一键日常异常: " + e);
+                toast("异常: " + e);
+                self._lastResult = "上次失败 ✗";
+            } finally {
+                self._t0 = 0;
+                self._thread = null;
+                self._paintBall(false);
+                try { sgs.pushShot(); } catch (e4) { }
+                try { sgs.pushLog(); } catch (e5) { }
+                self._post(function () { self._refresh(); });
             }
         });
     },
 
     stopAll: function () {
-        try {
-            if (this._thread) this._thread.interrupt();
-        } catch (e) { }
+        try { if (this._thread) this._thread.interrupt(); } catch (e) { }
         this._t0 = 0;
         this._thread = null;
+        this._lastResult = "已手动停止";
+        this._paintBall(false);
         toast("已请求停止");
     },
 
     refreshLog: function () {
         if (sgs.pushLog) sgs.pushLog();
+        var self = this;
+        this._post(function () { self._refresh(); });
     }
 };
 
 // ===== 启动（分步执行，每步单独 catch，便于定位）=====
 sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) + " ===");
 try { sgs.log.i(device.brand + " " + device.model + " / Android " + device.release); } catch (e0) { }
+
+// step1 清理残留引擎：重复 bootstrap 会留下多个引擎抢 /cmd，只保留自己
+try {
+    var __mine = engines.myEngine();
+    var __all = engines.all();
+    var __killed = 0;
+    for (var __i = 0; __i < __all.length; __i++) {
+        try {
+            var __en = __all[__i].getEngine();
+            if (__en && __en.getId() != __mine.getId()) { __en.forceStop(); __killed++; }
+        } catch (__eq) { }
+    }
+    sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
+} catch (__ec) { }
 
 sgs.log.i("step2 截图权限");
 try {
@@ -1034,7 +1332,14 @@ sgs.log.i("step4 截图自检");
 try { sleep(4000); sgs.pushShot(); } catch (e4) { sgs.log.e("pushShot 失败 " + e4); }
 
 // 常驻心跳：推日志 + 拉电脑端指令（3 秒一次），这样电脑可以直接指挥手机，不用人点
-setInterval(function () {
+var __hb = 0;
+threads.start(function () {
+  while (true) {
+    sleep(3000);
+    __hb++;
+    if (__hb % 20 == 0) {
+        try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
+    }
     try { sgs.pushLog(); } catch (e) { }
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });
@@ -1114,5 +1419,6 @@ setInterval(function () {
             sgs.pushLog();
         }
     } catch (e) { }
-}, 3000);
+  }
+});
 }

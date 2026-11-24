@@ -10,14 +10,14 @@ sgs.vision = {
     init: function () {
         if (this._capOk) return true;
         try {
+            var land = false;
             try {
-                this._capOk = requestScreenCapture(true);
-                log("[vision] 横屏截图已申请");
-            } catch (eLand) {
-                this._capOk = requestScreenCapture();
-                log("[vision] 横屏失败，退回默认 " + eLand);
-            }
-            sleep(800);
+                var ori = context.getResources().getConfiguration().orientation;
+                land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+            } catch (eo) { land = (device.width > device.height); }
+            this._capOk = requestScreenCapture(land);
+            log("[vision] 申请截图 land=" + land + " 结果=" + this._capOk);
+            sleep(500);
             return this._capOk;
         } catch (e) {
             log("[vision] 截图权限异常 " + e);
