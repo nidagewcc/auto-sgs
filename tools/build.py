@@ -70,6 +70,8 @@ sgs.log = {
 var pushFail = 0;
 
 sgs.pushLog = function () {
+    // sgs.PC 为空 = 没配电脑端，整套 HTTP 回传不启用，日志只落本地
+    if (!sgs.PC) { pushedIdx = LOGS.length; return; }
     if (pushFail >= 3 || pushedIdx >= LOGS.length) return;
     var chunk = LOGS.slice(pushedIdx).join("\\n");
     pushedIdx = LOGS.length;
@@ -83,7 +85,7 @@ sgs.pushLog = function () {
 };
 
 sgs.pushShot = function () {
-    if (pushFail >= 3) return;
+    if (!sgs.PC || pushFail >= 3) return;
     try {
         var im = sgs.vision ? sgs.vision.frame(true) : null;
         if (!im) return;
@@ -174,7 +176,7 @@ threads.start(function () {
         try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
     }
     try { sgs.pushLog(); } catch (e) { }
-    if (__cmdFail >= 10) continue;
+    if (!sgs.PC || __cmdFail >= 10) continue;
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });
         __cmdFail = 0;

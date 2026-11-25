@@ -1,18 +1,19 @@
 // config.js —— 常量与 ROI（坐标与 EC 版一致，横屏 2772x1280）
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 
-// 电脑端服务地址：优先读手机上的 pc.txt（一台机器一个地址，换电脑不用改代码）
+// 电脑端服务地址：只有手机上明确写了 pc.txt 才启用。
+// 空字符串 = 整套 HTTP 回传/远程指令关闭，只写本地 run.log。
+// （AutoX 时代靠电脑 8099 收日志发指令，现在用 adb + autotask.txt 就够，不必强制开机）
 sgs.PC = (function () {
-    var def = "http://192.168.2.250:8099";
     try {
         var f = "/sdcard/Download/autosgs-logs/pc.txt";
-        if (!files.exists(f)) return def;
+        if (!files.exists(f)) return "";
         var t = String(files.read(f)).trim();
-        if (!t) return def;
+        if (!t) return "";
         if (t.indexOf("http") !== 0) t = "http://" + t;
         if (t.indexOf(":", 8) < 0) t = t + ":8099";
         return t;
-    } catch (e) { return def; }
+    } catch (e) { return ""; }
 })();
 sgs.SCREEN = { width: 2772, height: 1280 };
 
