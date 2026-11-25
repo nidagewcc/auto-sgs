@@ -31,15 +31,16 @@ sgs.vision = {
         }
     },
 
-    /** 是否在主城：横屏 + 命中锚点 */
+    /** 是否在主城：横屏 + 锚点或底部菜单文字 */
     isHome: function (img) {
         img = img || this.frame();
         if (!img) return false;
         if (img.getWidth() <= img.getHeight()) return false;
-        var p = this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, sgs.ANCHOR.region, img);
-        if (p) return true;
-        // 兜底：region 没命中就全屏再找一次
-        return !!this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, null, img);
+        if (this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, sgs.ANCHOR.region, img)) return true;
+        // 全屏兜底，阈值放低（面板打开时游戏压了一层暗色遮罩）
+        if (this.find(sgs.ANCHOR.image, 0.55, null, img)) return true;
+        // 再兜一层：读底部菜单文字
+        return this.hasText(sgs.HOME_TEXT.text, sgs.HOME_TEXT.region, img);
     },
 
     /** 取一帧（内部缓存，同帧复用） */
@@ -136,6 +137,31 @@ sgs.vision = {
         ];
     },
 
+    /** OCR 引擎自适应：AutoX 用 gmlkit.ocr，AutoJs6 用 ocr()/ocr.mlkit */
+    _ocr: function (img) {
+        try {
+            if (typeof gmlkit !== "undefined" && gmlkit && gmlkit.ocr) {
+                if (this._ocrEng === undefined) sgs.log.i("[vision] OCR 引擎 gmlkit");
+                this._ocrEng = "gmlkit";
+                var r1 = gmlkit.ocr(img, "zh");
+                return r1 && r1.text ? String(r1.text) : "";
+            }
+        } catch (e1) { sgs.log.e("[vision] gmlkit.ocr 失败 " + e1); }
+
+        try {
+            if (typeof ocr !== "undefined") {
+                if (this._ocrEng === undefined) sgs.log.i("[vision] OCR 引擎 ocr (AutoJs6)");
+                this._ocrEng = "ocr";
+                var r2 = ocr(img, "zh");
+                if (typeof r2 === "string") return r2;
+                if (r2 && r2.text) return String(r2.text);
+                if (r2 && r2.fullText) return String(r2.fullText);
+                return "";
+            }
+        } catch (e2) { sgs.log.e("[vision] ocr() 失败 " + e2); }
+        return "";
+    },
+
     /** 按 ROI 裁图做 OCR，返回去掉空白的文本 */
     ocrRect: function (rect, img) {
         img = img || this.frame();
@@ -146,9 +172,7 @@ sgs.vision = {
             var h = rect[3] - rect[1];
             if (w <= 0 || h <= 0) return "";
             var clip = images.clip(img, rect[0], rect[1], w, h);
-            var r = gmlkit.ocr(clip, "zh");
-            var txt = r && r.text ? r.text : "";
-            return String(txt).replace(/\s+/g, " ").trim();
+            return String(this._ocr(clip)).replace(/\s+/g, " ").trim();
         } catch (e) {
             log("[vision] ocrRect 异常 " + rect + " : " + e);
             return "";
@@ -160,8 +184,7 @@ sgs.vision = {
         img = img || this.frame();
         if (!img) return "";
         try {
-            var r = gmlkit.ocr(img, "zh");
-            return r && r.text ? String(r.text) : "";
+            return String(this._ocr(img));
         } catch (e) {
             log("[vision] ocrFull 异常 " + e);
             return "";
@@ -181,18 +204,35 @@ sgs.vision = {
         }
     },
 
-    /** 找图：rect 为 [左,上,右,下] 或 null（全屏） */
+    /**
+     * 找图：rect 为 [左,上,右,下] 或 null（全屏）
+     * 平台自适应：原生 region 参数可用时直接用（AutoJs6），
+     * 不可用时降级为 clip 裁 ROI + 坐标补偏移（AutoX 会报 Path bounds must not be negative）
+     */
     find: function (name, threshold, rect, img) {
         img = img || this.frame();
         if (!img) return null;
         var tpl = this.loadTpl(name);
         if (!tpl) return null;
+        rect = this._mapRect(rect);
+        var th = threshold || sgs.THRESHOLD.image;
+
+        if (rect && this._regionOk !== false) {
+            try {
+                var hit = images.findImage(img, tpl, { threshold: th, region: rect });
+                if (this._regionOk === undefined) {
+                    this._regionOk = true;
+                    sgs.log.i("[vision] 原生 region 可用");
+                }
+                return hit ? { x: hit.x, y: hit.y } : null;
+            } catch (er) {
+                this._regionOk = false;
+                sgs.log.i("[vision] 原生 region 不可用，降级 clip 模式：" + er);
+            }
+        }
+
         try {
-            var opt = { threshold: threshold || sgs.THRESHOLD.image };
-            // 本机 findImage 的 region 参数不可靠（会报 Path bounds must not be negative），
-            // 改为先用 images.clip 裁出 ROI 再全图匹配，返回坐标补回偏移。
             var ox = 0, oy = 0, target = img;
-            rect = this._mapRect(rect);
             if (rect) {
                 var rw = rect[2] - rect[0], rh = rect[3] - rect[1];
                 if (rw <= 0 || rh <= 0) return null;
@@ -200,7 +240,7 @@ sgs.vision = {
                 target = images.clip(img, rect[0], rect[1], rw, rh);
                 ox = rect[0]; oy = rect[1];
             }
-            var r = images.findImage(target, tpl, opt);
+            var r = images.findImage(target, tpl, { threshold: th });
             if (r) r = { x: r.x + ox, y: r.y + oy };
             return r;
         } catch (e) {

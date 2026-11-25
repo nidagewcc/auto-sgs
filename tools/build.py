@@ -18,8 +18,21 @@ var __SRC = String(engines.myEngine().getSource());
 
 if (__SRC.indexOf("_main.js") < 0) {
     // 第一遍（由 bootstrap eval 进来）：把完整代码写进手机文件，然后交给新引擎，自己自然结束
+    // AutoJs6 直接打开本文件运行时不会走这里，只有 eval 自举才需要
     try {
-        var __r = http.get("http://192.168.2.250:8099/src/main.js?t=" + new Date().getTime(), { timeout: 20000 });
+        var __pc = "http://192.168.2.250:8099";
+        try {
+            var __pf = "/sdcard/Download/autosgs-logs/pc.txt";
+            if (files.exists(__pf)) {
+                var __pt = String(files.read(__pf)).trim();
+                if (__pt) {
+                    if (__pt.indexOf("http") !== 0) __pt = "http://" + __pt;
+                    if (__pt.indexOf(":", 8) < 0) __pt = __pt + ":8099";
+                    __pc = __pt;
+                }
+            }
+        } catch (__pe) { }
+        var __r = http.get(__pc + "/src/main.js?t=" + new Date().getTime(), { timeout: 20000 });
         var __code = __r.body.string();
         files.createWithDirs(__SELF);
         files.write(__SELF, __code);
@@ -81,27 +94,13 @@ try {
     sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
 } catch (__ec) { }
 
-sgs.log.i("step2 截图权限");
+sgs.log.i("step2 截图权限（不主动切前台，避免游戏 loading/掉线）");
 try {
-    // 画布方向只在进程内「首次」申请时生效（之后重复 requestScreenCapture 会忽略方向参数），
-    // 所以必须先让横屏的游戏进入前台，再申请截图。
-    var __cur = "";
-    try { __cur = currentPackage(); } catch (__e0) { __cur = ""; }
-    if (__cur !== "com.sanguosha.mjz.mi") {
-        sgs.log.i("前台 " + __cur + "，先拉起游戏再申请截图");
-        try { app.launchPackage("com.sanguosha.mjz.mi"); } catch (__e1) { }
-    }
-    var __land = false;
-    for (var __i = 0; __i < 6 && !__land; __i++) {
-        sleep(2000);
-        try {
-            __land = (context.getResources().getConfiguration().orientation
-                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
-        } catch (__e2) { __land = (device.width > device.height); }
-    }
-    sgs.log.i("横屏确认 land=" + __land);
     var okCap = sgs.vision.init();
     sgs.log.i("截图权限 " + okCap);
+    if (!okCap) {
+        sgs.log.e("截图权限未授予，任务无法运行");
+    }
 } catch (e2) {
     sgs.log.e("vision.init 失败 " + e2);
 }

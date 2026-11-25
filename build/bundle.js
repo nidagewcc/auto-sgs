@@ -4,8 +4,21 @@ var __SRC = String(engines.myEngine().getSource());
 
 if (__SRC.indexOf("_main.js") < 0) {
     // 第一遍（由 bootstrap eval 进来）：把完整代码写进手机文件，然后交给新引擎，自己自然结束
+    // AutoJs6 直接打开本文件运行时不会走这里，只有 eval 自举才需要
     try {
-        var __r = http.get("http://192.168.2.250:8099/src/main.js?t=" + new Date().getTime(), { timeout: 20000 });
+        var __pc = "http://192.168.2.250:8099";
+        try {
+            var __pf = "/sdcard/Download/autosgs-logs/pc.txt";
+            if (files.exists(__pf)) {
+                var __pt = String(files.read(__pf)).trim();
+                if (__pt) {
+                    if (__pt.indexOf("http") !== 0) __pt = "http://" + __pt;
+                    if (__pt.indexOf(":", 8) < 0) __pt = __pt + ":8099";
+                    __pc = __pt;
+                }
+            }
+        } catch (__pe) { }
+        var __r = http.get(__pc + "/src/main.js?t=" + new Date().getTime(), { timeout: 20000 });
         var __code = __r.body.string();
         files.createWithDirs(__SELF);
         files.write(__SELF, __code);
@@ -53,7 +66,19 @@ sgs.pushShot = function () {
 // config.js —— 常量与 ROI（坐标与 EC 版一致，横屏 2772x1280）
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 
-sgs.PC = "http://192.168.2.250:8099";
+// 电脑端服务地址：优先读手机上的 pc.txt（一台机器一个地址，换电脑不用改代码）
+sgs.PC = (function () {
+    var def = "http://192.168.2.250:8099";
+    try {
+        var f = "/sdcard/Download/autosgs-logs/pc.txt";
+        if (!files.exists(f)) return def;
+        var t = String(files.read(f)).trim();
+        if (!t) return def;
+        if (t.indexOf("http") !== 0) t = "http://" + t;
+        if (t.indexOf(":", 8) < 0) t = t + ":8099";
+        return t;
+    } catch (e) { return def; }
+})();
 sgs.SCREEN = { width: 2772, height: 1280 };
 
 // ROI 统一用 [左, 上, 右, 下]
@@ -70,6 +95,18 @@ sgs.ROI = {
 };
 
 sgs.ANCHOR = { image: "common/anchor-zhengzhan.png", region: [2400, 980, 2772, 1280] };
+
+// 主城兜底判定：暗色遮罩下模板匹配会掉分，改看底部菜单文字
+sgs.HOME_TEXT = { text: "征战", region: [2560, 1150, 2772, 1250] };
+
+// 异常页 / 登录流程的 ROI 与点击点（2772x1280）
+sgs.PAGES = {
+    relogin: { text: "重新登录", region: [1050, 800, 1900, 930], point: [1437, 862] },
+    notice: { text: "孤知道了", region: [1000, 990, 1900, 1120], point: [1432, 1051] },
+    login: { text: "进入游戏", region: [1050, 900, 1900, 1040], point: [1432, 970] },
+    adDismiss: { point: [1964, 97] },
+    offline: { text: "网络", region: [1000, 700, 1900, 830] }
+};
 sgs.THRESHOLD = { image: 0.8, weak: 0.7 };
 sgs.TIMEOUT = { ui: 3000, page: 8000, task: 300000 };
 sgs.LOG_DIR = "/sdcard/Download/autosgs-logs/";
@@ -110,15 +147,16 @@ sgs.vision = {
         }
     },
 
-    /** 是否在主城：横屏 + 命中锚点 */
+    /** 是否在主城：横屏 + 锚点或底部菜单文字 */
     isHome: function (img) {
         img = img || this.frame();
         if (!img) return false;
         if (img.getWidth() <= img.getHeight()) return false;
-        var p = this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, sgs.ANCHOR.region, img);
-        if (p) return true;
-        // 兜底：region 没命中就全屏再找一次
-        return !!this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, null, img);
+        if (this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, sgs.ANCHOR.region, img)) return true;
+        // 全屏兜底，阈值放低（面板打开时游戏压了一层暗色遮罩）
+        if (this.find(sgs.ANCHOR.image, 0.55, null, img)) return true;
+        // 再兜一层：读底部菜单文字
+        return this.hasText(sgs.HOME_TEXT.text, sgs.HOME_TEXT.region, img);
     },
 
     /** 取一帧（内部缓存，同帧复用） */
@@ -215,6 +253,31 @@ sgs.vision = {
         ];
     },
 
+    /** OCR 引擎自适应：AutoX 用 gmlkit.ocr，AutoJs6 用 ocr()/ocr.mlkit */
+    _ocr: function (img) {
+        try {
+            if (typeof gmlkit !== "undefined" && gmlkit && gmlkit.ocr) {
+                if (this._ocrEng === undefined) sgs.log.i("[vision] OCR 引擎 gmlkit");
+                this._ocrEng = "gmlkit";
+                var r1 = gmlkit.ocr(img, "zh");
+                return r1 && r1.text ? String(r1.text) : "";
+            }
+        } catch (e1) { sgs.log.e("[vision] gmlkit.ocr 失败 " + e1); }
+
+        try {
+            if (typeof ocr !== "undefined") {
+                if (this._ocrEng === undefined) sgs.log.i("[vision] OCR 引擎 ocr (AutoJs6)");
+                this._ocrEng = "ocr";
+                var r2 = ocr(img, "zh");
+                if (typeof r2 === "string") return r2;
+                if (r2 && r2.text) return String(r2.text);
+                if (r2 && r2.fullText) return String(r2.fullText);
+                return "";
+            }
+        } catch (e2) { sgs.log.e("[vision] ocr() 失败 " + e2); }
+        return "";
+    },
+
     /** 按 ROI 裁图做 OCR，返回去掉空白的文本 */
     ocrRect: function (rect, img) {
         img = img || this.frame();
@@ -225,9 +288,7 @@ sgs.vision = {
             var h = rect[3] - rect[1];
             if (w <= 0 || h <= 0) return "";
             var clip = images.clip(img, rect[0], rect[1], w, h);
-            var r = gmlkit.ocr(clip, "zh");
-            var txt = r && r.text ? r.text : "";
-            return String(txt).replace(/\s+/g, " ").trim();
+            return String(this._ocr(clip)).replace(/\s+/g, " ").trim();
         } catch (e) {
             log("[vision] ocrRect 异常 " + rect + " : " + e);
             return "";
@@ -239,8 +300,7 @@ sgs.vision = {
         img = img || this.frame();
         if (!img) return "";
         try {
-            var r = gmlkit.ocr(img, "zh");
-            return r && r.text ? String(r.text) : "";
+            return String(this._ocr(img));
         } catch (e) {
             log("[vision] ocrFull 异常 " + e);
             return "";
@@ -260,18 +320,35 @@ sgs.vision = {
         }
     },
 
-    /** 找图：rect 为 [左,上,右,下] 或 null（全屏） */
+    /**
+     * 找图：rect 为 [左,上,右,下] 或 null（全屏）
+     * 平台自适应：原生 region 参数可用时直接用（AutoJs6），
+     * 不可用时降级为 clip 裁 ROI + 坐标补偏移（AutoX 会报 Path bounds must not be negative）
+     */
     find: function (name, threshold, rect, img) {
         img = img || this.frame();
         if (!img) return null;
         var tpl = this.loadTpl(name);
         if (!tpl) return null;
+        rect = this._mapRect(rect);
+        var th = threshold || sgs.THRESHOLD.image;
+
+        if (rect && this._regionOk !== false) {
+            try {
+                var hit = images.findImage(img, tpl, { threshold: th, region: rect });
+                if (this._regionOk === undefined) {
+                    this._regionOk = true;
+                    sgs.log.i("[vision] 原生 region 可用");
+                }
+                return hit ? { x: hit.x, y: hit.y } : null;
+            } catch (er) {
+                this._regionOk = false;
+                sgs.log.i("[vision] 原生 region 不可用，降级 clip 模式：" + er);
+            }
+        }
+
         try {
-            var opt = { threshold: threshold || sgs.THRESHOLD.image };
-            // 本机 findImage 的 region 参数不可靠（会报 Path bounds must not be negative），
-            // 改为先用 images.clip 裁出 ROI 再全图匹配，返回坐标补回偏移。
             var ox = 0, oy = 0, target = img;
-            rect = this._mapRect(rect);
             if (rect) {
                 var rw = rect[2] - rect[0], rh = rect[3] - rect[1];
                 if (rw <= 0 || rh <= 0) return null;
@@ -279,13 +356,8 @@ sgs.vision = {
                 target = images.clip(img, rect[0], rect[1], rw, rh);
                 ox = rect[0]; oy = rect[1];
             }
-            var r = images.findImage(target, tpl, opt);
+            var r = images.findImage(target, tpl, { threshold: th });
             if (r) r = { x: r.x + ox, y: r.y + oy };
-            if (name.indexOf("anchor") >= 0) {
-                sgs.log.i("[dbg] anchor img=" + img.getWidth() + "x" + img.getHeight()
-                    + " tpl=" + tpl.getWidth() + "x" + tpl.getHeight()
-                    + " rect=" + JSON.stringify(rect) + " -> " + (r ? (r.x + "," + r.y) : "null"));
-            }
             return r;
         } catch (e) {
             log("[vision] find 异常 " + name + " : " + e
@@ -362,80 +434,111 @@ sgs.vision = {
 
 // ===== src/game.js =====
 
-// game.js —— 游戏启动与主城检测
+// game.js —— 游戏就绪检测与异常页自愈
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 
 sgs.game = {
     PKG: "com.sanguosha.mjz.mi",
 
-    /** 确保在游戏主城；返回 true/false */
+    /** 建画布（不切前台） */
+    _initCap: function (land) {
+        var v = sgs.vision;
+        v._capOk = false;
+        v.reset();
+        v._landForce = !!land;
+        return v.init();
+    },
+
+    /**
+     * 确保在游戏主城。
+     * 原则：不主动把游戏拉前台。切前台会触发游戏 loading，久了直接掉线。
+     * 先看图（主城/公告/登录/掉线），认不出且前台不是游戏时才拉一次。
+     */
     ensure: function (maxMs) {
         maxMs = maxMs || 120000;
         var v = sgs.vision;
+        var g = sgs.game;
 
-        // 关键：游戏是横屏 app。必须先把游戏拉到前台再申请截图，
-        // 否则脚本在 AutoX 竖屏界面启动，画布会被建成 1280x2772，之后永远错位。
-        var cur = "";
-        try { cur = currentPackage(); } catch (e) { cur = ""; }
-        if (cur !== this.PKG) {
-            sgs.log.i("前台 " + cur + "，先拉起游戏 " + this.PKG);
-            try { app.launchPackage(this.PKG); } catch (e) { sgs.log.e("启动失败 " + e); }
-            sleep(4000);
-        }
-
-        // 按当前（游戏横屏）方向重建画布
         v._capOk = false;
         v.reset();
         v._landForce = false;
         if (!v.init()) throw new Error("截图权限失败");
 
-        var im = v.frame(true);
-        if (im && v.isHome(im)) {
-            sgs.log.i("已在主城，无需拉起");
-            return true;
-        }
-        sgs.log.i("游戏已在前台，等待主城");
-        return this.waitHome(maxMs);
-    },
-
-    waitHome: function (maxMs) {
-        var v = sgs.vision;
         var t0 = new Date().getTime();
-        var n = 0;
         var notLand = 0;
+        var launched = 0;
+        var blank = 0;
+
         while (new Date().getTime() - t0 < maxMs) {
-            sleep(2500);
-            n++;
             var im = v.frame(true);
-            if (!im) {
-                sgs.log.i("第" + n + "次 截图为空");
-                continue;
-            }
-            var w = im.getWidth();
-            var h = im.getHeight();
-            if (w > h) {
-                notLand = 0;
-                var p = v.find(sgs.ANCHOR.image, 0.72, sgs.ANCHOR.region, im);
-                if (p) {
-                    sgs.log.i("到主城 " + Math.round((new Date().getTime() - t0) / 1000) + "s");
-                    return true;
-                }
-                sgs.log.i("第" + n + "次 未命中锚点");
-            } else {
+            if (!im) { sleep(1500); continue; }
+
+            if (im.getWidth() <= im.getHeight()) {
                 notLand++;
-                sgs.log.i("第" + n + "次 竖屏画布 " + w + "x" + h + "（连续" + notLand + "）");
-                if (notLand >= 3) {
-                    sgs.log.i("重新申请横屏截图（强制横屏）");
-                    v._capOk = false;
-                    v.reset();
-                    v._landForce = true;
-                    v.init();
+                if (notLand >= 2) {
+                    sgs.log.i("画布竖屏，强制横屏重建");
+                    g._initCap(true);
                     notLand = 0;
                 }
+                sleep(1200);
+                continue;
             }
+            notLand = 0;
+
+            if (v.isHome(im)) {
+                sgs.log.i("已到主城 " + Math.round((new Date().getTime() - t0) / 1000) + "s");
+                return true;
+            }
+
+            if (g._recover(im, v)) { sleep(2000); continue; }
+
+            // 认不出任何已知页面：可能是黑屏/加载中，先等；超过 3 次才考虑拉起
+            blank++;
+            if (blank >= 3) {
+                var cur = "";
+                try { cur = currentPackage(); } catch (e) { cur = ""; }
+                sgs.log.i("第" + blank + "次认不出画面，前台=" + cur);
+                if (cur !== g.PKG && launched < 1) {
+                    launched++;
+                    sgs.log.i("拉起游戏（仅一次）");
+                    try { app.launchPackage(g.PKG); } catch (e1) { sgs.log.e("拉起失败 " + e1); }
+                    sleep(8000);
+                    g._initCap(false);
+                    blank = 0;
+                }
+            }
+            sleep(1800);
         }
-        sgs.log.e("未见主城");
+        sgs.log.e("超时未到主城");
         return false;
+    },
+
+    /** 处理掉线/公告/登录页；返回 true 表示点掉了一个页面 */
+    _recover: function (im, v) {
+        var P = sgs.PAGES;
+        if (!P) return false;
+
+        if (v.hasText(P.relogin.text, P.relogin.region, im)) {
+            sgs.log.i("掉线弹窗，点重新登录");
+            v.tap(P.relogin.point[0], P.relogin.point[1]);
+            return true;
+        }
+        if (v.hasText(P.notice.text, P.notice.region, im)) {
+            sgs.log.i("公告弹窗，点关闭");
+            v.tap(P.notice.point[0], P.notice.point[1]);
+            return true;
+        }
+        if (v.hasText(P.login.text, P.login.region, im)) {
+            sgs.log.i("登录页，点进入游戏");
+            v.tap(P.login.point[0], P.login.point[1]);
+            return true;
+        }
+        return false;
+    },
+
+    /** 等待主城（沿用旧入口，内部走 ensure） */
+    waitHome: function (maxMs) {
+        return this.ensure(maxMs);
     }
 };
 
@@ -1454,27 +1557,13 @@ try {
     sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
 } catch (__ec) { }
 
-sgs.log.i("step2 截图权限");
+sgs.log.i("step2 截图权限（不主动切前台，避免游戏 loading/掉线）");
 try {
-    // 画布方向只在进程内「首次」申请时生效（之后重复 requestScreenCapture 会忽略方向参数），
-    // 所以必须先让横屏的游戏进入前台，再申请截图。
-    var __cur = "";
-    try { __cur = currentPackage(); } catch (__e0) { __cur = ""; }
-    if (__cur !== "com.sanguosha.mjz.mi") {
-        sgs.log.i("前台 " + __cur + "，先拉起游戏再申请截图");
-        try { app.launchPackage("com.sanguosha.mjz.mi"); } catch (__e1) { }
-    }
-    var __land = false;
-    for (var __i = 0; __i < 6 && !__land; __i++) {
-        sleep(2000);
-        try {
-            __land = (context.getResources().getConfiguration().orientation
-                == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
-        } catch (__e2) { __land = (device.width > device.height); }
-    }
-    sgs.log.i("横屏确认 land=" + __land);
     var okCap = sgs.vision.init();
     sgs.log.i("截图权限 " + okCap);
+    if (!okCap) {
+        sgs.log.e("截图权限未授予，任务无法运行");
+    }
 } catch (e2) {
     sgs.log.e("vision.init 失败 " + e2);
 }
