@@ -363,6 +363,7 @@ MODS = [
     "src/tasks/playerinfo.js",
     "src/tasks/mail.js",
     "src/tasks/xiaoqiao.js",
+    "src/tasks/junqing.js",
     "src/ui.js",
 ]
 

@@ -7,17 +7,16 @@ const BASE = path.resolve(__dirname, "..");
 const PY = path.join(BASE, "tools", "build.py");
 const OUT = path.join(BASE, "build", "bundle.js");
 
-const MODS = [
-  "src/config.js",
-  "src/vision.js",
-  "src/game.js",
-  "src/tasks/playerinfo.js",
-  "src/tasks/mail.js",
-  "src/tasks/xiaoqiao.js",
-  "src/ui.js",
-];
-
 const pySrc = fs.readFileSync(PY, "utf8");
+
+// MODS 也从 build.py 读，别再维护第二份：这里原本另抄了一版列表，
+// 结果新加的 junqing.js 只在 build.py 里注册了，bundle 里根本没有
+function grabMods() {
+  const m = pySrc.match(/MODS\s*=\s*\[([\s\S]*?)\]/);
+  if (!m) throw new Error("未能从 build.py 提取 MODS");
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+}
+const MODS = grabMods();
 
 function grab(name) {
   const re = new RegExp(name + '\\s*=\\s*u"""([\\s\\S]*?)"""');

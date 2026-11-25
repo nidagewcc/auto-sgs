@@ -24,6 +24,7 @@ sgs.ui = {
         { id: "playerinfo", icon: "人", title: "读取玩家信息", desc: "昵称 · 等级 · 战力 · 资源", color: "FF2B6CB0" },
         { id: "mail", icon: "邮", title: "邮件全部领取", desc: "领完并关闭弹窗回主城", color: "FF2F7A57" },
         { id: "xiaoqiao", icon: "乔", title: "小乔 · 一键日常", desc: "开启日常并等完成（耗元宝）", color: "FF6C4FA8" },
+        { id: "junqing", icon: "军", title: "紧急军情 · 一键挑战", desc: "三关一键挑战（耗体力约 30）", color: "FFA34A2A" },
         { id: "daily", icon: "全", title: "一键日常", desc: "邮件 → 小乔，依次跑完", color: "FFB8862B" },
         { id: "shot", icon: "图", title: "截屏回传", desc: "把当前画面发到电脑", color: "FF46566B" }
     ],
@@ -212,9 +213,9 @@ sgs.ui = {
         root.setPadding(this.px(8), this.px(8), this.px(8), this.px(8));
         root.setElevation(this.px(10));
 
-        // 第一行：三个任务
+        // 第一行：信息 / 邮件 / 小乔
         root.addView(this._dockRow([this.TASKS[0], this.TASKS[1], this.TASKS[2]]));
-        // 第二行：一键日常 / 截图 / 更多
+        // 第二行：军情 / 一键日常 / 更多（截图改到面板里点，圆盘只留 6 格）
         var row2 = this._dockRow([this.TASKS[3], this.TASKS[4], null]);
         root.addView(row2);
 
@@ -262,7 +263,7 @@ sgs.ui = {
             icon.setLayoutParams(ilp);
             cell.addView(icon);
 
-            var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
+            var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "junqing" ? "军情" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
             lbl.setGravity(android.view.Gravity.CENTER);
             var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
             llp.setMargins(0, this.px(5), 0, 0);
