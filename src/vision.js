@@ -281,9 +281,15 @@ sgs.vision = {
     /** 读模板（脚本目录下 res/img/...） */
     loadTpl: function (name) {
         try {
+            // 模板缓存：原来每次 find 都 images.read 一遍，同一个小乔头像在轮询里
+            // 会被读上百次，既慢又攒下一堆没人回收的 Image
+            if (!this._tpls) this._tpls = {};
+            var c = this._tpls[name];
+            if (c) return c;
             var p = files.cwd() + "/res/img/" + name;
             var t = images.read(p);
-            if (!t) log("[vision] 模板不存在 " + p);
+            if (!t) { log("[vision] 模板不存在 " + p); return null; }
+            this._tpls[name] = t;
             return t;
         } catch (e) {
             log("[vision] 模板读取异常 " + name + " : " + e);

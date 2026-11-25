@@ -435,9 +435,15 @@ sgs.vision = {
     /** 读模板（脚本目录下 res/img/...） */
     loadTpl: function (name) {
         try {
+            // 模板缓存：原来每次 find 都 images.read 一遍，同一个小乔头像在轮询里
+            // 会被读上百次，既慢又攒下一堆没人回收的 Image
+            if (!this._tpls) this._tpls = {};
+            var c = this._tpls[name];
+            if (c) return c;
             var p = files.cwd() + "/res/img/" + name;
             var t = images.read(p);
-            if (!t) log("[vision] 模板不存在 " + p);
+            if (!t) { log("[vision] 模板不存在 " + p); return null; }
+            this._tpls[name] = t;
             return t;
         } catch (e) {
             log("[vision] 模板读取异常 " + name + " : " + e);
@@ -962,11 +968,12 @@ sgs.tasks.xiaoqiao = {
     name: "主城小乔·一键日常",
 
     ENTRY: "xiaoqiao/entry-left.png",
-    ENTRY_LEFT: [0, 380, 150, 600],
-    ENTRY_RIGHT: [2400, 480, 2772, 780],
+    // 入口是可拖动的悬浮头像，位置会变。先试左右两个常见位，最后全屏兜底；
+    // 点击一律用识别到的中心点，不再写死坐标——写死等于把「头像没挪」当成前提
+    ENTRY_LEFT: [0, 280, 320, 860],
+    ENTRY_RIGHT: [2180, 340, 2772, 940],
     ENTRY_RIGHT_TPL: "xiaoqiao/home-avatar.png",
     ENTRY_TH: 0.75,
-    AVATAR_POINT: [38, 485], // 左侧头像被屏幕边缘裁掉一半，点击用固定坐标更稳
 
     TAB_TEXT: "日常功能",
     TAB_CHECK: "日常", // OCR 常把「功」认成「劝」，判断时用短词
@@ -990,9 +997,25 @@ sgs.tasks.xiaoqiao = {
 
     _findAvatar: function () {
         var v = sgs.vision;
-        var p = v.find(this.ENTRY, this.ENTRY_TH, this.ENTRY_LEFT, v.frame(true));
-        if (p) return p;
-        return v.find(this.ENTRY_RIGHT_TPL, this.ENTRY_TH, this.ENTRY_RIGHT, v.frame(true));
+        var img = v.frame(true);
+        if (!img) return null;
+        // 顺序：左右常见位 -> 全屏兜底。同一个 frame 反复 find，避免每试一次截一屏
+        var cands = [
+            { tpl: this.ENTRY, rect: this.ENTRY_LEFT },
+            { tpl: this.ENTRY_RIGHT_TPL, rect: this.ENTRY_RIGHT },
+            { tpl: this.ENTRY, rect: null },
+            { tpl: this.ENTRY_RIGHT_TPL, rect: null }
+        ];
+        for (var i = 0; i < cands.length; i++) {
+            var p = v.find(cands[i].tpl, this.ENTRY_TH, cands[i].rect, img);
+            if (p) {
+                sgs.log.i("头像命中 " + cands[i].tpl
+                    + (cands[i].rect ? " 区域" + JSON.stringify(cands[i].rect) : " 全屏")
+                    + " 中心 " + p.x + "," + p.y);
+                return p;
+            }
+        }
+        return null;
     },
 
     _done: function () {
@@ -1038,9 +1061,9 @@ sgs.tasks.xiaoqiao = {
             avatar = this._findAvatar();
         }
         if (!avatar) throw new Error("未识别到小乔头像，无法打开助手面板");
-        // 左侧头像被屏幕边缘裁掉一半，点击点用固定坐标；识别点只用来确认头像确实存在
-        v.clickPointAt(this.AVATAR_POINT[0], this.AVATAR_POINT[1]);
-        sgs.log.i("已点击小乔头像 (" + this.AVATAR_POINT[0] + "," + this.AVATAR_POINT[1] + ") 匹配点 " + avatar.x + "," + avatar.y);
+        // 点识别到的中心点。find() 返回的已经是模板中心，不是左上角
+        v.clickPointAt(avatar.x, avatar.y);
+        sgs.log.i("已点击小乔头像 (" + avatar.x + "," + avatar.y + ")");
         if (!this._waitPanel(1)) throw new Error("点击头像后未确认助手面板");
         sgs.log.i("小乔助手面板已打开");
     },
