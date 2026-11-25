@@ -158,9 +158,15 @@ try {
         var __tid = String(files.read(__tf)).replace(/[ \r\n\t]+/g, "");
         files.remove(__tf);
         if (__tid) {
-            sgs.log.i("冒烟任务 " + __tid);
-            sgs.ui.runTask(__tid, "冒烟-" + __tid);
-            sgs.log.i("冒烟任务结束 " + __tid);
+            // 只跑真实任务。reload / tap: / shot: / ball: 属于控制指令，交给心跳循环处理；
+            // 启动阶段把 "reload" 当任务名会直接报「任务不存在 reload」
+            if (!sgs.tasks[__tid]) {
+                sgs.log.w("冒烟忽略非任务指令 " + __tid);
+            } else {
+                sgs.log.i("冒烟任务 " + __tid);
+                sgs.ui.runTask(__tid, "冒烟-" + __tid);
+                sgs.log.i("冒烟任务结束 " + __tid);
+            }
         }
     }
 } catch (e5) { sgs.log.e("冒烟任务异常 " + e5); }
@@ -182,7 +188,10 @@ threads.start(function () {
 
     // 任务投递：adb 往 autotask.txt 写任务名即可，脚本自己取自己跑。
     // 这样不用把 AutoJs6 拉到前台，游戏一直留前台，不会被挤出触发同步 loading。
-    if (!__busy) {
+    // 互斥直接看真实任务线程（sgs.ui.isBusy），不能用 __busy：
+    // __busy 只包住「启动任务」的包装线程，runTask 起完线程立刻返回，真实任务还在跑时 __busy 已经放开，
+    // 下一条指令会被取走并删掉，任务运行中又拒绝执行，指令就静默消失。任务在跑时文件留在盘上，天然排队。
+    if (!sgs.ui.isBusy()) {
         try {
             if (files.exists(__TASKFILE)) {
                 var __tid2 = String(files.read(__TASKFILE)).replace(/[ \r\n\t]+/g, "");
@@ -235,14 +244,11 @@ threads.start(function () {
                     continue;
                 }
                 if (__tid2) {
-                    __busy = true;
                     sgs.log.i("[投递] " + __tid2);
+                    // 直接调 runTask：它自己起任务线程并立即返回，外面再包一层线程只会让互斥提前释放
                     (function (tidc) {
-                        threads.start(function () {
-                            try { sgs.ui.runTask(tidc, "投递-" + tidc); }
-                            catch (et) { sgs.log.e("投递任务异常 " + et); }
-                            __busy = false;
-                        });
+                        try { sgs.ui.runTask(tidc, "投递-" + tidc); }
+                        catch (et) { sgs.log.e("投递任务异常 " + et); }
                     })(__tid2);
                 }
             }
@@ -258,8 +264,9 @@ threads.start(function () {
             sgs.log.i("[cmd] " + cmd);
             if (cmd.indexOf("run:") == 0) {
                 var tid = cmd.substring(4);
-                sgs.ui._t0 = 0;
-                sgs.ui.runTask(tid, "远程-" + tid);
+                // 原来这里先清 _t0 再启动，等于主动绕过互斥，会让两个任务并行抢点击
+                if (sgs.ui.isBusy()) sgs.log.w("[cmd] 任务运行中，拒绝 " + tid);
+                else sgs.ui.runTask(tid, "远程-" + tid);
             } else if (cmd.indexOf("stop") == 0) {
                 sgs.ui.stopAll();
             } else if (cmd.indexOf("shot") == 0) {

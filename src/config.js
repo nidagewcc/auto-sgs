@@ -39,7 +39,9 @@ sgs.HOME_TEXT = { text: "征战", region: [2560, 1150, 2772, 1250] };
 sgs.PAGES = {
     relogin: { text: "重新登录", region: [1050, 800, 1900, 930], point: [1437, 862] },
     notice: { text: "孤知道了", region: [1000, 990, 1900, 1120], point: [1432, 1051] },
-    login: { text: "进入游戏", region: [1050, 900, 1900, 1040], point: [1432, 970] },
+    login: { text: "进入游戏", region: [1000, 890, 1900, 1120], point: [1324, 1043] },
+    // 登录页专属判据：页面底部协议行，主城没有。用来把登录页从「主城」里排除出去
+    loginAgree: { text: "我已阅读并同意", region: [800, 890, 1500, 1000], point: [952, 947] },
     adDismiss: { point: [1964, 97] },
     offline: { text: "网络", region: [1000, 700, 1900, 830] }
 };

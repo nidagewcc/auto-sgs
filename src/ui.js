@@ -10,7 +10,7 @@ sgs.ui = {
     dockView: null,
     panelView: null, _statusTv: null, _logTv: null,
 
-    _thread: null, _t0: 0, _tick: null, _lastResult: "",
+    _thread: null, _t0: 0, _tick: null, _lastResult: "", _token: null,
 
     C: {
         ballOff: "FF121821", ballOn: "FF3A2410",
@@ -227,7 +227,6 @@ sgs.ui = {
     },
 
     _dockRow: function (items) {
-        var self = this;
         var row = new android.widget.LinearLayout(this._ctx);
         row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         var lp = new android.widget.LinearLayout.LayoutParams(-1, -2);
@@ -235,59 +234,65 @@ sgs.ui = {
         row.setLayoutParams(lp);
 
         for (var i = 0; i < items.length; i++) {
-            var t = items[i];
-            var cell = new android.widget.LinearLayout(this._ctx);
-            cell.setOrientation(android.widget.LinearLayout.VERTICAL);
-            cell.setGravity(android.view.Gravity.CENTER);
-            cell.setBackground(this._shape(t ? this.C.card : this.C.card, this.C.line, 1, 10));
-            cell.setPadding(this.px(4), this.px(6), this.px(4), this.px(6));
-            cell.setClickable(true);
-            var cw = this.px(60);
-            var clp = new android.widget.LinearLayout.LayoutParams(cw, this.px(52));
-            if (i > 0) clp.setMargins(this.px(6), 0, 0, 0);
-            cell.setLayoutParams(clp);
-
-            if (t) {
-                var icon = this._tv(t.icon, 13, "FFFFFFFF", true);
-                icon.setGravity(android.view.Gravity.CENTER);
-                icon.setBackground(this._shape(t.color, null, 1, -1));
-                var ilp = new android.widget.LinearLayout.LayoutParams(this.px(26), this.px(26));
-                icon.setLayoutParams(ilp);
-                cell.addView(icon);
-
-                var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
-                lbl.setGravity(android.view.Gravity.CENTER);
-                var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
-                llp.setMargins(0, this.px(5), 0, 0);
-                lbl.setLayoutParams(llp);
-                cell.addView(lbl);
-
-                cell.setOnClickListener(new android.view.View.OnClickListener({
-                    onClick: function (v) {
-                        if (self.isBusy()) { toast("任务执行中"); return; }
-                        self.hideDock();
-                        self.runTask(t.id, t.title);
-                    }
-                }));
-            } else {
-                var more = this._tv("⋯", 16, this.C.gold, true);
-                more.setGravity(android.view.Gravity.CENTER);
-                more.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
-                cell.addView(more);
-                var mlbl = this._tv("更多", 9, this.C.sub, false);
-                mlbl.setGravity(android.view.Gravity.CENTER);
-                var mlp = new android.widget.LinearLayout.LayoutParams(-1, -2);
-                mlp.setMargins(0, this.px(5), 0, 0);
-                mlbl.setLayoutParams(mlp);
-                cell.addView(mlbl);
-
-                cell.setOnClickListener(new android.view.View.OnClickListener({
-                    onClick: function (v) { self.hideDock(); self.showPanel(); }
-                }));
-            }
-            row.addView(cell);
+            row.addView(this._dockCell(items[i], i === 0));
         }
         return row;
+    },
+
+    // 每个格子单独成函数：回调闭包捕获的是本函数的参数 t，每次调用独立。
+    // 原来在 for 循环里用 var t 建监听器，Rhino 无块作用域，循环结束后所有回调共用
+    // 同一个 t（停在最后一项），导致「信息/邮件」都去启动小乔、「更多」那行读 null.id 报错。
+    _dockCell: function (t, isFirst) {
+        var self = this;
+        var cell = new android.widget.LinearLayout(this._ctx);
+        cell.setOrientation(android.widget.LinearLayout.VERTICAL);
+        cell.setGravity(android.view.Gravity.CENTER);
+        cell.setBackground(this._shape(this.C.card, this.C.line, 1, 10));
+        cell.setPadding(this.px(4), this.px(6), this.px(4), this.px(6));
+        cell.setClickable(true);
+        var clp = new android.widget.LinearLayout.LayoutParams(this.px(60), this.px(52));
+        if (!isFirst) clp.setMargins(this.px(6), 0, 0, 0);
+        cell.setLayoutParams(clp);
+
+        if (t) {
+            var icon = this._tv(t.icon, 13, "FFFFFFFF", true);
+            icon.setGravity(android.view.Gravity.CENTER);
+            icon.setBackground(this._shape(t.color, null, 1, -1));
+            var ilp = new android.widget.LinearLayout.LayoutParams(this.px(26), this.px(26));
+            icon.setLayoutParams(ilp);
+            cell.addView(icon);
+
+            var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
+            lbl.setGravity(android.view.Gravity.CENTER);
+            var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            llp.setMargins(0, this.px(5), 0, 0);
+            lbl.setLayoutParams(llp);
+            cell.addView(lbl);
+
+            cell.setOnClickListener(new android.view.View.OnClickListener({
+                onClick: function (v) {
+                    if (self.isBusy()) { toast("任务执行中"); return; }
+                    self.hideDock();
+                    self.runTask(t.id, t.title);
+                }
+            }));
+        } else {
+            var more = this._tv("⋯", 16, this.C.gold, true);
+            more.setGravity(android.view.Gravity.CENTER);
+            more.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+            cell.addView(more);
+            var mlbl = this._tv("更多", 9, this.C.sub, false);
+            mlbl.setGravity(android.view.Gravity.CENTER);
+            var mlp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            mlp.setMargins(0, this.px(5), 0, 0);
+            mlbl.setLayoutParams(mlp);
+            cell.addView(mlbl);
+
+            cell.setOnClickListener(new android.view.View.OnClickListener({
+                onClick: function (v) { self.hideDock(); self.showPanel(); }
+            }));
+        }
+        return cell;
     },
 
     // ---------------- 完整面板（长按球）----------------
@@ -467,9 +472,14 @@ sgs.ui = {
     },
 
     // ---------------- 执行 ----------------
+    // 忙碌以线程是否存活为准，不能只看时间戳：
+    // 小乔允许跑 420s，原来硬编码 300s 会把还在执行的任务判成空闲，后面进来的任务并行抢点击
     isBusy: function () {
+        if (this._thread) {
+            try { if (this._thread.isAlive()) return true; } catch (e) { }
+        }
         if (!this._t0) return false;
-        return (new Date().getTime() - this._t0) < 300000;
+        return (new Date().getTime() - this._t0) < 600000;
     },
 
     runTask: function (id, label) {
@@ -478,6 +488,8 @@ sgs.ui = {
         if (id === "daily") { this.runDaily(label); return; }
         this._t0 = new Date().getTime();
         this._paintBall(true);
+        var token = {};
+        this._token = token;
         this._thread = threads.start(function () {
             var t0 = new Date().getTime();
             try {
@@ -502,9 +514,12 @@ sgs.ui = {
                 toast("异常: " + e);
                 self._lastResult = "上次失败 ✗";
             } finally {
-                self._t0 = 0;
-                self._thread = null;
-                self._paintBall(false);
+                // 只有自己仍是当前任务才清状态：旧任务收尾不能把新任务的 _thread/_t0 抹掉
+                if (self._token === token) {
+                    self._t0 = 0;
+                    self._thread = null;
+                    self._paintBall(false);
+                }
                 try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
                 try { sgs.pushLog(); } catch (e3) { }
                 self._post(function () { self._refresh(); });
@@ -518,6 +533,8 @@ sgs.ui = {
         if (this.isBusy()) { toast("任务执行中"); return; }
         this._t0 = new Date().getTime();
         this._paintBall(true);
+        var token = {};
+        this._token = token;
         this._thread = threads.start(function () {
             var t0 = new Date().getTime();
             var done = [], fail = [];
@@ -553,9 +570,11 @@ sgs.ui = {
                 toast("异常: " + e);
                 self._lastResult = "上次失败 ✗";
             } finally {
-                self._t0 = 0;
-                self._thread = null;
-                self._paintBall(false);
+                if (self._token === token) {
+                    self._t0 = 0;
+                    self._thread = null;
+                    self._paintBall(false);
+                }
                 try { sgs.pushShot(); } catch (e4) { }
                 try { sgs.pushLog(); } catch (e5) { }
                 self._post(function () { self._refresh(); });

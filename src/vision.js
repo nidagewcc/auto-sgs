@@ -64,11 +64,15 @@ sgs.vision = {
         return ok;
     },
 
-    /** 是否在主城：横屏 + 锚点或底部菜单文字 */
+    /** 是否在主城：先排除登录页，再判横屏 + 锚点或底部菜单文字 */
     isHome: function (img) {
         img = img || this.frame();
         if (!img) return false;
         if (img.getWidth() <= img.getHeight()) return false;
+        // 登录页和主城共用同一张背景图，下面 0.55 的全屏兜底会把它认成主城，
+        // 结果「看着在主城」却一个字都 OCR 不到。先按登录页专属文字排掉。
+        if (this.hasText("我已阅读并同意", sgs.PAGES.loginAgree.region, img)) return false;
+        if (this.hasText(sgs.PAGES.login.text, sgs.PAGES.login.region, img)) return false;
         if (this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, sgs.ANCHOR.region, img)) return true;
         // 全屏兜底，阈值放低（面板打开时游戏压了一层暗色遮罩）
         if (this.find(sgs.ANCHOR.image, 0.55, null, img)) return true;

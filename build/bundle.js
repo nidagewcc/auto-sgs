@@ -126,7 +126,9 @@ sgs.HOME_TEXT = { text: "征战", region: [2560, 1150, 2772, 1250] };
 sgs.PAGES = {
     relogin: { text: "重新登录", region: [1050, 800, 1900, 930], point: [1437, 862] },
     notice: { text: "孤知道了", region: [1000, 990, 1900, 1120], point: [1432, 1051] },
-    login: { text: "进入游戏", region: [1050, 900, 1900, 1040], point: [1432, 970] },
+    login: { text: "进入游戏", region: [1000, 890, 1900, 1120], point: [1324, 1043] },
+    // 登录页专属判据：页面底部协议行，主城没有。用来把登录页从「主城」里排除出去
+    loginAgree: { text: "我已阅读并同意", region: [800, 890, 1500, 1000], point: [952, 947] },
     adDismiss: { point: [1964, 97] },
     offline: { text: "网络", region: [1000, 700, 1900, 830] }
 };
@@ -203,11 +205,15 @@ sgs.vision = {
         return ok;
     },
 
-    /** 是否在主城：横屏 + 锚点或底部菜单文字 */
+    /** 是否在主城：先排除登录页，再判横屏 + 锚点或底部菜单文字 */
     isHome: function (img) {
         img = img || this.frame();
         if (!img) return false;
         if (img.getWidth() <= img.getHeight()) return false;
+        // 登录页和主城共用同一张背景图，下面 0.55 的全屏兜底会把它认成主城，
+        // 结果「看着在主城」却一个字都 OCR 不到。先按登录页专属文字排掉。
+        if (this.hasText("我已阅读并同意", sgs.PAGES.loginAgree.region, img)) return false;
+        if (this.hasText(sgs.PAGES.login.text, sgs.PAGES.login.region, img)) return false;
         if (this.find(sgs.ANCHOR.image, sgs.ANCHOR.threshold || 0.7, sgs.ANCHOR.region, img)) return true;
         // 全屏兜底，阈值放低（面板打开时游戏压了一层暗色遮罩）
         if (this.find(sgs.ANCHOR.image, 0.55, null, img)) return true;
@@ -1037,12 +1043,15 @@ sgs.tasks.xiaoqiao = {
         }
         // 4) 陌生子界面兜底：误触进拍卖 / 图鉴 / 军团等页面时，点左上角返回
         //    实测主城 2772x1280 下点 (70,70) 能从「全服拍卖」退回主城
-        for (var q = 1; q <= 3 && !sgs.vision.isHome(); q++) {
+        //    每轮必须重新取帧：isHome() 不带参数会读缓存，第一次已回主城也看不出来，
+        //    会继续白点两次再按旧帧抛错
+        for (var q = 1; q <= 3; q++) {
+            if (sgs.vision.isHome(v.frame(true))) break;
             sgs.log.w("未回主城，点左上角返回（第 " + q + " 轮）");
             v.clickPointAt(70, 70);
             sleep(2500);
         }
-        if (!sgs.vision.isHome()) throw new Error("面板未能关闭并回到主城");
+        if (!sgs.vision.isHome(v.frame(true))) throw new Error("面板未能关闭并回到主城");
         sgs.log.i("已确认回到主城");
     },
 
@@ -1126,7 +1135,7 @@ sgs.ui = {
     dockView: null,
     panelView: null, _statusTv: null, _logTv: null,
 
-    _thread: null, _t0: 0, _tick: null, _lastResult: "",
+    _thread: null, _t0: 0, _tick: null, _lastResult: "", _token: null,
 
     C: {
         ballOff: "FF121821", ballOn: "FF3A2410",
@@ -1343,7 +1352,6 @@ sgs.ui = {
     },
 
     _dockRow: function (items) {
-        var self = this;
         var row = new android.widget.LinearLayout(this._ctx);
         row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         var lp = new android.widget.LinearLayout.LayoutParams(-1, -2);
@@ -1351,59 +1359,65 @@ sgs.ui = {
         row.setLayoutParams(lp);
 
         for (var i = 0; i < items.length; i++) {
-            var t = items[i];
-            var cell = new android.widget.LinearLayout(this._ctx);
-            cell.setOrientation(android.widget.LinearLayout.VERTICAL);
-            cell.setGravity(android.view.Gravity.CENTER);
-            cell.setBackground(this._shape(t ? this.C.card : this.C.card, this.C.line, 1, 10));
-            cell.setPadding(this.px(4), this.px(6), this.px(4), this.px(6));
-            cell.setClickable(true);
-            var cw = this.px(60);
-            var clp = new android.widget.LinearLayout.LayoutParams(cw, this.px(52));
-            if (i > 0) clp.setMargins(this.px(6), 0, 0, 0);
-            cell.setLayoutParams(clp);
-
-            if (t) {
-                var icon = this._tv(t.icon, 13, "FFFFFFFF", true);
-                icon.setGravity(android.view.Gravity.CENTER);
-                icon.setBackground(this._shape(t.color, null, 1, -1));
-                var ilp = new android.widget.LinearLayout.LayoutParams(this.px(26), this.px(26));
-                icon.setLayoutParams(ilp);
-                cell.addView(icon);
-
-                var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
-                lbl.setGravity(android.view.Gravity.CENTER);
-                var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
-                llp.setMargins(0, this.px(5), 0, 0);
-                lbl.setLayoutParams(llp);
-                cell.addView(lbl);
-
-                cell.setOnClickListener(new android.view.View.OnClickListener({
-                    onClick: function (v) {
-                        if (self.isBusy()) { toast("任务执行中"); return; }
-                        self.hideDock();
-                        self.runTask(t.id, t.title);
-                    }
-                }));
-            } else {
-                var more = this._tv("⋯", 16, this.C.gold, true);
-                more.setGravity(android.view.Gravity.CENTER);
-                more.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
-                cell.addView(more);
-                var mlbl = this._tv("更多", 9, this.C.sub, false);
-                mlbl.setGravity(android.view.Gravity.CENTER);
-                var mlp = new android.widget.LinearLayout.LayoutParams(-1, -2);
-                mlp.setMargins(0, this.px(5), 0, 0);
-                mlbl.setLayoutParams(mlp);
-                cell.addView(mlbl);
-
-                cell.setOnClickListener(new android.view.View.OnClickListener({
-                    onClick: function (v) { self.hideDock(); self.showPanel(); }
-                }));
-            }
-            row.addView(cell);
+            row.addView(this._dockCell(items[i], i === 0));
         }
         return row;
+    },
+
+    // 每个格子单独成函数：回调闭包捕获的是本函数的参数 t，每次调用独立。
+    // 原来在 for 循环里用 var t 建监听器，Rhino 无块作用域，循环结束后所有回调共用
+    // 同一个 t（停在最后一项），导致「信息/邮件」都去启动小乔、「更多」那行读 null.id 报错。
+    _dockCell: function (t, isFirst) {
+        var self = this;
+        var cell = new android.widget.LinearLayout(this._ctx);
+        cell.setOrientation(android.widget.LinearLayout.VERTICAL);
+        cell.setGravity(android.view.Gravity.CENTER);
+        cell.setBackground(this._shape(this.C.card, this.C.line, 1, 10));
+        cell.setPadding(this.px(4), this.px(6), this.px(4), this.px(6));
+        cell.setClickable(true);
+        var clp = new android.widget.LinearLayout.LayoutParams(this.px(60), this.px(52));
+        if (!isFirst) clp.setMargins(this.px(6), 0, 0, 0);
+        cell.setLayoutParams(clp);
+
+        if (t) {
+            var icon = this._tv(t.icon, 13, "FFFFFFFF", true);
+            icon.setGravity(android.view.Gravity.CENTER);
+            icon.setBackground(this._shape(t.color, null, 1, -1));
+            var ilp = new android.widget.LinearLayout.LayoutParams(this.px(26), this.px(26));
+            icon.setLayoutParams(ilp);
+            cell.addView(icon);
+
+            var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
+            lbl.setGravity(android.view.Gravity.CENTER);
+            var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            llp.setMargins(0, this.px(5), 0, 0);
+            lbl.setLayoutParams(llp);
+            cell.addView(lbl);
+
+            cell.setOnClickListener(new android.view.View.OnClickListener({
+                onClick: function (v) {
+                    if (self.isBusy()) { toast("任务执行中"); return; }
+                    self.hideDock();
+                    self.runTask(t.id, t.title);
+                }
+            }));
+        } else {
+            var more = this._tv("⋯", 16, this.C.gold, true);
+            more.setGravity(android.view.Gravity.CENTER);
+            more.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+            cell.addView(more);
+            var mlbl = this._tv("更多", 9, this.C.sub, false);
+            mlbl.setGravity(android.view.Gravity.CENTER);
+            var mlp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            mlp.setMargins(0, this.px(5), 0, 0);
+            mlbl.setLayoutParams(mlp);
+            cell.addView(mlbl);
+
+            cell.setOnClickListener(new android.view.View.OnClickListener({
+                onClick: function (v) { self.hideDock(); self.showPanel(); }
+            }));
+        }
+        return cell;
     },
 
     // ---------------- 完整面板（长按球）----------------
@@ -1583,9 +1597,14 @@ sgs.ui = {
     },
 
     // ---------------- 执行 ----------------
+    // 忙碌以线程是否存活为准，不能只看时间戳：
+    // 小乔允许跑 420s，原来硬编码 300s 会把还在执行的任务判成空闲，后面进来的任务并行抢点击
     isBusy: function () {
+        if (this._thread) {
+            try { if (this._thread.isAlive()) return true; } catch (e) { }
+        }
         if (!this._t0) return false;
-        return (new Date().getTime() - this._t0) < 300000;
+        return (new Date().getTime() - this._t0) < 600000;
     },
 
     runTask: function (id, label) {
@@ -1594,6 +1613,8 @@ sgs.ui = {
         if (id === "daily") { this.runDaily(label); return; }
         this._t0 = new Date().getTime();
         this._paintBall(true);
+        var token = {};
+        this._token = token;
         this._thread = threads.start(function () {
             var t0 = new Date().getTime();
             try {
@@ -1618,9 +1639,12 @@ sgs.ui = {
                 toast("异常: " + e);
                 self._lastResult = "上次失败 ✗";
             } finally {
-                self._t0 = 0;
-                self._thread = null;
-                self._paintBall(false);
+                // 只有自己仍是当前任务才清状态：旧任务收尾不能把新任务的 _thread/_t0 抹掉
+                if (self._token === token) {
+                    self._t0 = 0;
+                    self._thread = null;
+                    self._paintBall(false);
+                }
                 try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
                 try { sgs.pushLog(); } catch (e3) { }
                 self._post(function () { self._refresh(); });
@@ -1634,6 +1658,8 @@ sgs.ui = {
         if (this.isBusy()) { toast("任务执行中"); return; }
         this._t0 = new Date().getTime();
         this._paintBall(true);
+        var token = {};
+        this._token = token;
         this._thread = threads.start(function () {
             var t0 = new Date().getTime();
             var done = [], fail = [];
@@ -1669,9 +1695,11 @@ sgs.ui = {
                 toast("异常: " + e);
                 self._lastResult = "上次失败 ✗";
             } finally {
-                self._t0 = 0;
-                self._thread = null;
-                self._paintBall(false);
+                if (self._token === token) {
+                    self._t0 = 0;
+                    self._thread = null;
+                    self._paintBall(false);
+                }
                 try { sgs.pushShot(); } catch (e4) { }
                 try { sgs.pushLog(); } catch (e5) { }
                 self._post(function () { self._refresh(); });
@@ -1755,9 +1783,15 @@ try {
         var __tid = String(files.read(__tf)).replace(/[ \r\n\t]+/g, "");
         files.remove(__tf);
         if (__tid) {
-            sgs.log.i("冒烟任务 " + __tid);
-            sgs.ui.runTask(__tid, "冒烟-" + __tid);
-            sgs.log.i("冒烟任务结束 " + __tid);
+            // 只跑真实任务。reload / tap: / shot: / ball: 属于控制指令，交给心跳循环处理；
+            // 启动阶段把 "reload" 当任务名会直接报「任务不存在 reload」
+            if (!sgs.tasks[__tid]) {
+                sgs.log.w("冒烟忽略非任务指令 " + __tid);
+            } else {
+                sgs.log.i("冒烟任务 " + __tid);
+                sgs.ui.runTask(__tid, "冒烟-" + __tid);
+                sgs.log.i("冒烟任务结束 " + __tid);
+            }
         }
     }
 } catch (e5) { sgs.log.e("冒烟任务异常 " + e5); }
@@ -1779,7 +1813,10 @@ threads.start(function () {
 
     // 任务投递：adb 往 autotask.txt 写任务名即可，脚本自己取自己跑。
     // 这样不用把 AutoJs6 拉到前台，游戏一直留前台，不会被挤出触发同步 loading。
-    if (!__busy) {
+    // 互斥直接看真实任务线程（sgs.ui.isBusy），不能用 __busy：
+    // __busy 只包住「启动任务」的包装线程，runTask 起完线程立刻返回，真实任务还在跑时 __busy 已经放开，
+    // 下一条指令会被取走并删掉，任务运行中又拒绝执行，指令就静默消失。任务在跑时文件留在盘上，天然排队。
+    if (!sgs.ui.isBusy()) {
         try {
             if (files.exists(__TASKFILE)) {
                 var __tid2 = String(files.read(__TASKFILE)).replace(/[ \r\n\t]+/g, "");
@@ -1832,14 +1869,11 @@ threads.start(function () {
                     continue;
                 }
                 if (__tid2) {
-                    __busy = true;
                     sgs.log.i("[投递] " + __tid2);
+                    // 直接调 runTask：它自己起任务线程并立即返回，外面再包一层线程只会让互斥提前释放
                     (function (tidc) {
-                        threads.start(function () {
-                            try { sgs.ui.runTask(tidc, "投递-" + tidc); }
-                            catch (et) { sgs.log.e("投递任务异常 " + et); }
-                            __busy = false;
-                        });
+                        try { sgs.ui.runTask(tidc, "投递-" + tidc); }
+                        catch (et) { sgs.log.e("投递任务异常 " + et); }
                     })(__tid2);
                 }
             }
@@ -1855,8 +1889,9 @@ threads.start(function () {
             sgs.log.i("[cmd] " + cmd);
             if (cmd.indexOf("run:") == 0) {
                 var tid = cmd.substring(4);
-                sgs.ui._t0 = 0;
-                sgs.ui.runTask(tid, "远程-" + tid);
+                // 原来这里先清 _t0 再启动，等于主动绕过互斥，会让两个任务并行抢点击
+                if (sgs.ui.isBusy()) sgs.log.w("[cmd] 任务运行中，拒绝 " + tid);
+                else sgs.ui.runTask(tid, "远程-" + tid);
             } else if (cmd.indexOf("stop") == 0) {
                 sgs.ui.stopAll();
             } else if (cmd.indexOf("shot") == 0) {
