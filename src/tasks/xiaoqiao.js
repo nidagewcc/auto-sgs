@@ -8,10 +8,10 @@ sgs.tasks.xiaoqiao = {
     name: "主城小乔·一键日常",
 
     ENTRY: "xiaoqiao/entry-left.png",
-    // 入口是可拖动的悬浮头像，位置会变。先试左右两个常见位，最后全屏兜底；
-    // 点击一律用识别到的中心点，不再写死坐标——写死等于把「头像没挪」当成前提
-    ENTRY_LEFT: [0, 280, 320, 860],
-    ENTRY_RIGHT: [2180, 340, 2772, 940],
+    // 入口是悬浮头像，只会在屏幕左右两侧出现，纵向位置不固定 —— 所以两条搜索带拉满全高。
+    // 不做全屏兜底：全屏会让模板误匹配到画面里其他圆头像，点过去就是乱点
+    ENTRY_LEFT: [0, 0, 400, 1280],
+    ENTRY_RIGHT: [2372, 0, 2772, 1280],
     ENTRY_RIGHT_TPL: "xiaoqiao/home-avatar.png",
     ENTRY_TH: 0.75,
 
@@ -39,12 +39,10 @@ sgs.tasks.xiaoqiao = {
         var v = sgs.vision;
         var img = v.frame(true);
         if (!img) return null;
-        // 顺序：左右常见位 -> 全屏兜底。同一个 frame 反复 find，避免每试一次截一屏
+        // 只认左右两条侧带，不做全屏兜底
         var cands = [
             { tpl: this.ENTRY, rect: this.ENTRY_LEFT },
-            { tpl: this.ENTRY_RIGHT_TPL, rect: this.ENTRY_RIGHT },
-            { tpl: this.ENTRY, rect: null },
-            { tpl: this.ENTRY_RIGHT_TPL, rect: null }
+            { tpl: this.ENTRY_RIGHT_TPL, rect: this.ENTRY_RIGHT }
         ];
         for (var i = 0; i < cands.length; i++) {
             var p = v.find(cands[i].tpl, this.ENTRY_TH, cands[i].rect, img);
