@@ -652,7 +652,7 @@ sgs.tasks.playerinfo = {
     FIELDS: [
         { key: "nickname", parser: "text" },
         { key: "level", parser: "level" },
-        { key: "combat_power", parser: "text" },
+        { key: "combat_power", parser: "power" },
         { key: "physical", parser: "fraction" },
         { key: "energy", parser: "fraction" },
         { key: "sycee", parser: "int" },
@@ -728,7 +728,23 @@ sgs.tasks.playerinfo = {
                 if (lj > lb) bestKey = kj;
             }
         }
-        return first[bestKey];
+        var pick = first[bestKey];
+        if (type === "level") {
+            // 等级只会被 OCR 吃掉前导位（「120级」→「20级」「A20级」），不会凭空多一位。
+            // 若众数是某个更长候选的后缀，取更长的那个。
+            var bv = pick.value, br = pick.raw;
+            for (var k3 in first) {
+                if (!first.hasOwnProperty(k3)) continue;
+                var v3 = first[k3].value;
+                if (v3 === null || v3 === undefined) continue;
+                var s3 = String(v3), sb = String(bv);
+                if (s3.length > sb.length && s3.substring(s3.length - sb.length) === sb) {
+                    bv = v3; br = first[k3].raw;
+                }
+            }
+            return { value: bv, raw: br };
+        }
+        return pick;
     },
 
     _parse: function (type, raw) {
@@ -745,6 +761,20 @@ sgs.tasks.playerinfo = {
             var i0 = parseInt(n0, 10);
             if (isNaN(i0) || i0 <= 0) return null;
             return i0;
+        }
+
+        if (type === "power") {
+            // 「1271037万」容易被 OCR 读成「1271037万万」，先把重复单位压成一个
+            var p = s.replace(/[,\s]/g, "").replace(/万{2,}/g, "万");
+            var m3 = p.match(/(\d+(?:\.\d+)?)\s*(亿|万|千)?/);
+            if (!m3) return null;
+            var n3 = parseFloat(m3[1]);
+            if (isNaN(n3)) return null;
+            var u3 = m3[2] || "";
+            if (u3 === "亿") n3 *= 100000000;
+            else if (u3 === "万") n3 *= 10000;
+            else if (u3 === "千") n3 *= 1000;
+            return n3;
         }
 
         if (type === "int") {
