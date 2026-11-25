@@ -858,29 +858,19 @@ sgs.tasks.mail = {
         if (!opened) throw new Error("未找到邮件入口或弹窗未打开");
         sgs.log.i("邮件弹窗已打开");
 
-        // 2) 全部领取；游戏刚从后台同步回来时这一下可能被吞，给 3 次机会
-        var claimDone = false;
-        for (var ci = 1; ci <= 3; ci++) {
-            var claim = v.find(this.CLAIM, 0.8, this.CLAIM_REGION, v.frame(true));
-            if (!claim) {
-                sgs.log.i("未检测到全部领取按钮，无可领取内容");
+        // 2) 全部领取。有附件会弹「恭喜获得」浮层，点屏幕下方空白即关；
+        //    无可领邮件时按钮不消失、点了也没反应，所以不拿按钮当判据，点完就走。
+        //    被 loading 吞掉也只影响这一次，日常天天跑，不必为此反复重试。
+        for (var ci = 1; ci <= 2; ci++) {
+            if (!v.tapImage(this.CLAIM, 0.8, this.CLAIM_REGION)) {
+                sgs.log.i("未检测到全部领取按钮");
                 break;
             }
-            v.clickRect(claim);
             sgs.log.i("点击「全部领取」（第 " + ci + " 轮）");
-            sleep(2500);
-
-            // 领到附件会弹「恭喜获得」浮层，它盖在弹窗上会把后面的关闭点击吃掉
-            if (v.waitImage(this.REWARD, 1500, this.REWARD_REGION, 0.75)) {
-                v.clickPointAt(this.DISMISS[0], this.DISMISS[1], 8);
-                sgs.log.i("已点掉奖励浮层");
-                claimDone = true;
-                sleep(600);
-                break;
-            }
-            sgs.log.w("第 " + ci + " 轮未见奖励浮层，可能被 loading 吞了");
+            sleep(2000);
+            v.clickPointAt(this.DISMISS[0], this.DISMISS[1]);
+            sleep(600);
         }
-        if (!claimDone) sgs.log.w("全部领取未确认成功，继续尝试关闭");
 
         // 3) 关闭弹窗，确认回主城
         var cp = v.find(this.CLOSE, 0.8, this.CLOSE_REGION, v.frame(true));
