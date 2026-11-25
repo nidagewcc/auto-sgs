@@ -87,8 +87,26 @@ $adb = "D:\develops\tools\platform-tools\adb.exe"
 
 ## 无人值守调试技巧
 
-在手机写 `/sdcard/Download/autosgs-logs/autotask.txt`，内容写任务 id（`playerinfo` / `mail` / `xiaoqiao`），
-脚本启动后会读它自动跑一次并删除该文件。日志写在 `/sdcard/Download/autosgs-logs/run.log`，`adb shell cat` 直接看，不依赖电脑端 8099。
+**核心原则：脚本常驻，绝对不要 `am start` 把 AutoJs6 拉到前台。**
+游戏被压到后台会触发同步 loading，这段时间画面看着还是主城，但点击全部被吞，久了还会掉线。踩过两次，症状是「日志说点成功了，实际什么都没发生」。
+
+投递任务（心跳每 3 秒轮询一次）：
+
+```powershell
+# 跑一次任务
+& $adb shell "echo -n mail > /sdcard/Download/autosgs-logs/autotask.txt"
+
+# 改完代码后热重载，不用切前台点运行按钮
+& $adb push build\bundle.js /sdcard/脚本/auto-sgs/_main.js
+& $adb shell "echo -n reload > /sdcard/Download/autosgs-logs/autotask.txt"
+```
+
+日志 `/sdcard/Download/autosgs-logs/run.log`，`adb shell cat` 直读。
+
+## 点击坐标必须是模板中心
+
+`vision.find` 返回的是**模板中心**，不是左上角。`images.findImage` 原生返回左上角，必须在 find 里补 `w/2, h/2`。
+不补的话每次点击都偏半个模板尺寸，落在按钮外面，而且**查不出来**——画面没变化会被当成"游戏没反应"，很容易误判成掉线。
 
 ## 点不掉的系统弹框怎么处理
 
