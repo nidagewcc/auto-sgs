@@ -52,8 +52,18 @@ sgs.game = {
             notLand = 0;
 
             if (v.isHome(im)) {
-                sgs.log.i("已到主城 " + Math.round((new Date().getTime() - t0) / 1000) + "s");
-                return true;
+                // 刚被拉回前台时游戏还在同步 loading：画面看着像主城，
+                // 但点击全被吞，这时候干活等于白点（邮件「全部领取」就栽在这）
+                sgs.log.i("画面已是主城 " + Math.round((new Date().getTime() - t0) / 1000) + "s，等同步完成");
+                sleep(4000);
+                var imS = v.frame(true);
+                if (imS && v.isHome(imS)) {
+                    sgs.log.i("同步完成，可交互 " + Math.round((new Date().getTime() - t0) / 1000) + "s");
+                    return true;
+                }
+                sgs.log.w("复检仍不稳定，继续等");
+                sleep(1500);
+                continue;
             }
 
             if (g._recover(im, v)) { sleep(2000); continue; }

@@ -294,7 +294,15 @@ sgs.vision = {
                     this._regionOk = true;
                     sgs.log.i("[vision] 原生 region 可用");
                 }
-                return hit ? { x: hit.x, y: hit.y } : null;
+                // 返回模板中心，不是左上角。点左上角会让每个点击都偏半个模板，
+                // 落在按钮外面还查不出来（mail 的「全部领取」就是这么一直点空的）
+                if (hit) {
+                    return {
+                        x: hit.x + Math.round(tpl.getWidth() / 2),
+                        y: hit.y + Math.round(tpl.getHeight() / 2)
+                    };
+                }
+                return null;
             } catch (er) {
                 this._regionOk = false;
                 sgs.log.i("[vision] 原生 region 不可用，降级 clip 模式：" + er);
@@ -311,7 +319,12 @@ sgs.vision = {
                 ox = rect[0]; oy = rect[1];
             }
             var r = images.findImage(target, tpl, { threshold: th });
-            if (r) r = { x: r.x + ox, y: r.y + oy };
+            if (r) {
+                r = {
+                    x: r.x + ox + Math.round(tpl.getWidth() / 2),
+                    y: r.y + oy + Math.round(tpl.getHeight() / 2)
+                };
+            }
             return r;
         } catch (e) {
             log("[vision] find 异常 " + name + " : " + e

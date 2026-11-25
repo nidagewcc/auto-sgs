@@ -433,7 +433,15 @@ sgs.vision = {
                     this._regionOk = true;
                     sgs.log.i("[vision] 原生 region 可用");
                 }
-                return hit ? { x: hit.x, y: hit.y } : null;
+                // 返回模板中心，不是左上角。点左上角会让每个点击都偏半个模板，
+                // 落在按钮外面还查不出来（mail 的「全部领取」就是这么一直点空的）
+                if (hit) {
+                    return {
+                        x: hit.x + Math.round(tpl.getWidth() / 2),
+                        y: hit.y + Math.round(tpl.getHeight() / 2)
+                    };
+                }
+                return null;
             } catch (er) {
                 this._regionOk = false;
                 sgs.log.i("[vision] 原生 region 不可用，降级 clip 模式：" + er);
@@ -450,7 +458,12 @@ sgs.vision = {
                 ox = rect[0]; oy = rect[1];
             }
             var r = images.findImage(target, tpl, { threshold: th });
-            if (r) r = { x: r.x + ox, y: r.y + oy };
+            if (r) {
+                r = {
+                    x: r.x + ox + Math.round(tpl.getWidth() / 2),
+                    y: r.y + oy + Math.round(tpl.getHeight() / 2)
+                };
+            }
             return r;
         } catch (e) {
             log("[vision] find 异常 " + name + " : " + e
@@ -581,8 +594,18 @@ sgs.game = {
             notLand = 0;
 
             if (v.isHome(im)) {
-                sgs.log.i("已到主城 " + Math.round((new Date().getTime() - t0) / 1000) + "s");
-                return true;
+                // 刚被拉回前台时游戏还在同步 loading：画面看着像主城，
+                // 但点击全被吞，这时候干活等于白点（邮件「全部领取」就栽在这）
+                sgs.log.i("画面已是主城 " + Math.round((new Date().getTime() - t0) / 1000) + "s，等同步完成");
+                sleep(4000);
+                var imS = v.frame(true);
+                if (imS && v.isHome(imS)) {
+                    sgs.log.i("同步完成，可交互 " + Math.round((new Date().getTime() - t0) / 1000) + "s");
+                    return true;
+                }
+                sgs.log.w("复检仍不稳定，继续等");
+                sleep(1500);
+                continue;
             }
 
             if (g._recover(im, v)) { sleep(2000); continue; }
@@ -834,41 +857,49 @@ sgs.tasks.mail = {
         if (!opened) throw new Error("未找到邮件入口或弹窗未打开");
         sgs.log.i("邮件弹窗已打开");
 
-        // 2) 全部领取
-        var claim = v.find(this.CLAIM, 0.8, this.CLAIM_REGION, v.frame(true));
-        if (claim) {
+        // 2) 全部领取；游戏刚从后台同步回来时这一下可能被吞，给 3 次机会
+        var claimDone = false;
+        for (var ci = 1; ci <= 3; ci++) {
+            var claim = v.find(this.CLAIM, 0.8, this.CLAIM_REGION, v.frame(true));
+            if (!claim) {
+                sgs.log.i("未检测到全部领取按钮，无可领取内容");
+                break;
+            }
             v.clickRect(claim);
-            sgs.log.i("已点击全部领取");
+            sgs.log.i("点击「全部领取」（第 " + ci + " 轮）");
+            sleep(2500);
 
-            // 领到附件会弹「恭喜获得」浮层，必须先点掉，否则会截获后面的关闭点击
+            // 领到附件会弹「恭喜获得」浮层，它盖在弹窗上会把后面的关闭点击吃掉
             if (v.waitImage(this.REWARD, 1500, this.REWARD_REGION, 0.75)) {
                 v.clickPointAt(this.DISMISS[0], this.DISMISS[1], 8);
                 sgs.log.i("已点掉奖励浮层");
-                sleep(400);
+                claimDone = true;
+                sleep(600);
+                break;
             }
-            if (!v.waitImage(this.CLOSE, sgs.TIMEOUT.ui, this.CLOSE_REGION, 0.8)) {
-                throw new Error("点击全部领取后弹窗状态异常");
-            }
-        } else {
-            sgs.log.i("未检测到全部领取按钮，无可领取内容");
+            sgs.log.w("第 " + ci + " 轮未见奖励浮层，可能被 loading 吞了");
         }
+        if (!claimDone) sgs.log.w("全部领取未确认成功，继续尝试关闭");
 
         // 3) 关闭弹窗，确认回主城
+        var cp = v.find(this.CLOSE, 0.8, this.CLOSE_REGION, v.frame(true));
+        sgs.log.i("关闭按钮命中 " + (cp ? (cp.x + "," + cp.y) : "无"));
         var closed = false;
         for (var j = 1; j <= 3; j++) {
             if (v.tapImage(this.CLOSE, 0.8, this.CLOSE_REGION)) {
-                var t0 = new Date().getTime();
-                while (new Date().getTime() - t0 < sgs.TIMEOUT.ui) {
-                    if (!v.hasImage(this.CLOSE, this.CLOSE_REGION, 0.8)) {
-                        closed = true;
-                        break;
-                    }
-                    sleep(600);
+                sleep(900);
+                // 判定弹窗是否真关掉，看「全部领取」按钮还在不在。
+                // 不能用"close 图标找不到"当依据——模板匹不上时 hasImage 恒 false，
+                // 会被当成已关闭，一步没点就误报成功（踩过一次）
+                if (!v.hasImage(this.CLAIM, this.CLAIM_REGION, 0.8)) {
+                    closed = true;
+                    break;
                 }
-                if (closed) break;
             }
+            sleep(600);
         }
         if (!closed) throw new Error("邮件弹窗未能关闭");
+        sgs.log.i("邮件弹窗已关闭");
 
         var home = v.waitImage(sgs.ANCHOR.image, sgs.TIMEOUT.ui, sgs.ANCHOR.region, 0.72);
         if (!home) throw new Error("关闭弹窗后未确认回到主城");
@@ -1736,6 +1767,9 @@ try {
 // 常驻心跳：推日志 + 拉电脑端指令（3 秒一次），这样电脑可以直接指挥手机，不用人点
 var __hb = 0;
 var __cmdFail = 0;
+var __busy = false;
+var __SELF = "/storage/emulated/0/脚本/auto-sgs/_main.js";
+var __TASKFILE = "/sdcard/Download/autosgs-logs/autotask.txt";
 threads.start(function () {
   while (true) {
     sleep(3000);
@@ -1744,6 +1778,37 @@ threads.start(function () {
         try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
     }
     try { sgs.pushLog(); } catch (e) { }
+
+    // 任务投递：adb 往 autotask.txt 写任务名即可，脚本自己取自己跑。
+    // 这样不用把 AutoJs6 拉到前台，游戏一直留前台，不会被挤出触发同步 loading。
+    if (!__busy) {
+        try {
+            if (files.exists(__TASKFILE)) {
+                var __tid2 = String(files.read(__TASKFILE)).replace(/[ \r\n\t]+/g, "");
+                files.remove(__TASKFILE);
+                if (__tid2 === "reload") {
+                    sgs.log.i("[投递] reload：重新加载脚本");
+                    sgs.pushLog();
+                    try { engines.execScriptFile(__SELF); } catch (er0) { sgs.log.e("reload 失败 " + er0); }
+                    sleep(1500);
+                    try { engines.myEngine().forceStop(); } catch (er1) { }
+                    return;
+                }
+                if (__tid2) {
+                    __busy = true;
+                    sgs.log.i("[投递] " + __tid2);
+                    (function (tidc) {
+                        threads.start(function () {
+                            try { sgs.ui.runTask(tidc, "投递-" + tidc); }
+                            catch (et) { sgs.log.e("投递任务异常 " + et); }
+                            __busy = false;
+                        });
+                    })(__tid2);
+                }
+            }
+        } catch (e7) { sgs.log.e("投递检查异常 " + e7); }
+    }
+
     if (!sgs.PC || __cmdFail >= 10) continue;
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });

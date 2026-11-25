@@ -168,6 +168,9 @@ try {
 // 常驻心跳：推日志 + 拉电脑端指令（3 秒一次），这样电脑可以直接指挥手机，不用人点
 var __hb = 0;
 var __cmdFail = 0;
+var __busy = false;
+var __SELF = "/storage/emulated/0/脚本/auto-sgs/_main.js";
+var __TASKFILE = "/sdcard/Download/autosgs-logs/autotask.txt";
 threads.start(function () {
   while (true) {
     sleep(3000);
@@ -176,6 +179,37 @@ threads.start(function () {
         try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
     }
     try { sgs.pushLog(); } catch (e) { }
+
+    // 任务投递：adb 往 autotask.txt 写任务名即可，脚本自己取自己跑。
+    // 这样不用把 AutoJs6 拉到前台，游戏一直留前台，不会被挤出触发同步 loading。
+    if (!__busy) {
+        try {
+            if (files.exists(__TASKFILE)) {
+                var __tid2 = String(files.read(__TASKFILE)).replace(/[ \r\n\t]+/g, "");
+                files.remove(__TASKFILE);
+                if (__tid2 === "reload") {
+                    sgs.log.i("[投递] reload：重新加载脚本");
+                    sgs.pushLog();
+                    try { engines.execScriptFile(__SELF); } catch (er0) { sgs.log.e("reload 失败 " + er0); }
+                    sleep(1500);
+                    try { engines.myEngine().forceStop(); } catch (er1) { }
+                    return;
+                }
+                if (__tid2) {
+                    __busy = true;
+                    sgs.log.i("[投递] " + __tid2);
+                    (function (tidc) {
+                        threads.start(function () {
+                            try { sgs.ui.runTask(tidc, "投递-" + tidc); }
+                            catch (et) { sgs.log.e("投递任务异常 " + et); }
+                            __busy = false;
+                        });
+                    })(__tid2);
+                }
+            }
+        } catch (e7) { sgs.log.e("投递检查异常 " + e7); }
+    }
+
     if (!sgs.PC || __cmdFail >= 10) continue;
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });
