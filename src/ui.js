@@ -583,12 +583,25 @@ sgs.ui = {
     },
 
     stopAll: function () {
-        try { if (this._thread) this._thread.interrupt(); } catch (e) { }
+        var th = this._thread;
+        var alive = false;
+        try { if (th) th.interrupt(); } catch (e) { }
+        // token 置空：让旧任务的 finally 认不出自己，不会把「已手动停止」之后的状态再改一遍
+        this._token = null;
+        // interrupt 只是打了个标记，线程还在 sleep 里，醒来前随时可能再点一下屏幕。
+        // 必须等它真的退出再放开互斥，否则新任务进来就是两个线程抢同一块屏
+        if (th) {
+            for (var w = 0; w < 40; w++) {
+                try { alive = th.isAlive(); } catch (e2) { alive = false; }
+                if (!alive) break;
+                sleep(100);
+            }
+        }
         this._t0 = 0;
         this._thread = null;
         this._lastResult = "已手动停止";
         this._paintBall(false);
-        toast("已请求停止");
+        toast(alive ? "已请求停止，线程未在 4s 内退出" : "已停止");
     },
 
     refreshLog: function () {

@@ -38,9 +38,22 @@ var pushedIdx = 0;
 var LOG_FILE = "/sdcard/Download/autosgs-logs/run.log";
 
 // 手机本地日志：不依赖电脑端服务，adb pull 就能看
+var LOG_MAX = 1024 * 1024;
 function appendFile(s) {
     try {
         files.ensureDir("/sdcard/Download/autosgs-logs/");
+        // 只留最近 1MB。日志涨到几十 MB 后 append 会明显变慢，adb tail/pull 也从毫秒变秒级，
+        // 轮转保留一份 .1 便于回看上一轮，剩下的直接丢
+        try {
+            if (files.exists(LOG_FILE)) {
+                var __sz = 0;
+                try { __sz = files.size(LOG_FILE); } catch (e1) { __sz = 0; }
+                if (__sz > LOG_MAX) {
+                    try { files.copy(LOG_FILE, LOG_FILE + ".1"); } catch (e2) { }
+                    files.write(LOG_FILE, "");
+                }
+            }
+        } catch (e3) { }
         files.append(LOG_FILE, s + "\n");
     } catch (e) { }
 }
@@ -230,7 +243,13 @@ sgs.vision = {
             // AutoJs6 的 Image 背后是复用池，下一次 captureScreen 会让旧对象失效
             // （报 "图像资源已被回收"），所以拿到就立刻 clone 一份脱离池子
             try { if (raw) raw = raw.clone(); } catch (ec) { }
-            this._img = this._normalize(raw);
+            var next = this._normalize(raw);
+            // 换帧不能立刻回收上一帧：playerinfo 一次连取 3 帧做投票，调用方手里还攥着旧帧，
+            // 立即 recycle 会让第 738 行 getWidth() 报「图像资源已被回收」（真机实测踩到）。
+            // 改成延迟回收：只留最近 KEEP 帧，超出的才真正释放，泄漏有界（KEEP 帧 = 约 42MB）
+            var old = this._img;
+            this._img = next;
+            if (old && old !== next) this._retire(old);
             return this._img;
         } catch (e) {
             log("[vision] 截图失败 " + e);
@@ -283,9 +302,12 @@ sgs.vision = {
             try {
                 // AutoJs6: images.resize(img, size[, interpolation])，size 必须传数组
                 rs = images.resize(clip, [2772, 1280], "LINEAR");
+                // 只有 resize 真产出了新对象才能回收中间图；原地缩放时 rs 就是 clip 本身
+                if (rs !== clip) { try { clip.recycle(); } catch (r1) { } }
             } catch (er1) {
                 try {
                     rs = images.scale(clip, 2772 / b.w, 1280 / b.h, "LINEAR");
+                    if (rs !== clip) { try { clip.recycle(); } catch (r2) { } }
                 } catch (er2) {
                     sgs.log.e("[vision] resize/scale 都不可用，改走坐标映射：" + er2);
                     this._scale = { x: b.w / 2772, y: b.h / 1280 };
@@ -309,7 +331,28 @@ sgs.vision = {
         }
     },
 
-    reset: function () { this._img = null; this._band = null; this._scale = null; },
+    /**
+     * 退役帧暂存。最近 KEEP 帧一律不回收，超出的才真回收。
+     * 每帧 2772x1280 约 14MB，不回收跑几十帧就把 native 堆吃穿；回收太早又会踩到调用方的旧帧。
+     */
+    _retire: function (img) {
+        try {
+            if (!this._kept) this._kept = [];
+            this._kept.push(img);
+            while (this._kept.length > 3) {
+                var o = this._kept.shift();
+                if (o && o !== this._img) { try { o.recycle(); } catch (e) { } }
+            }
+        } catch (e) { }
+    },
+
+    reset: function () {
+        var arr = [this._img].concat(this._kept || []);
+        for (var i = 0; i < arr.length; i++) {
+            if (arr[i]) { try { arr[i].recycle(); } catch (e) { } }
+        }
+        this._img = null; this._kept = []; this._band = null; this._scale = null;
+    },
 
     /** [左,上,右,下] -> [x,y,w,h] */
     _toRegion: function (rect) {
@@ -865,11 +908,13 @@ sgs.tasks.mail = {
         sgs.log.i("邮件弹窗已打开");
 
         // 2) 全部领取。有附件会弹「恭喜获得」浮层，点屏幕下方空白即关；
-        //    无可领邮件时按钮不消失、点了也没反应，所以不拿按钮当判据，点完就走。
-        //    被 loading 吞掉也只影响这一次，日常天天跑，不必为此反复重试。
+        //    无可领邮件时按钮不消失、点了没反应，所以不拿按钮消失当判据。
+        //    但第一轮必须真的识别到按钮：识别不到说明模板失配或弹窗没开成，
+        //    继续静默走完会给出一个假的「已领取」结论，宁可直接报错。
         for (var ci = 1; ci <= 2; ci++) {
             if (!v.tapImage(this.CLAIM, 0.8, this.CLAIM_REGION)) {
-                sgs.log.i("未检测到全部领取按钮");
+                if (ci === 1) throw new Error("未识别到「全部领取」按钮，领取结果未知");
+                sgs.log.w("第 2 轮未检测到全部领取按钮，停止重试");
                 break;
             }
             sgs.log.i("点击「全部领取」（第 " + ci + " 轮）");
@@ -929,7 +974,7 @@ sgs.tasks.xiaoqiao = {
 
     KAIQI: "xiaoqiao/kaiqi.png",
     KAIQI_REGION: [1800, 700, 2150, 1050],
-    KAIQI_POINT: [1900, 940], // 图识别兜底 + 实际点击点：日常功能页右下角「开启」中心
+    KAIQI_POINT: [1900, 940], // 仅作文档参考；点击一律用图识别到的按钮中心，不做盲点兜底
     KAIQI_TH: 0.8,
 
     COMPLETION_REGION: [860, 1060, 1980, 1165],
@@ -957,7 +1002,9 @@ sgs.tasks.xiaoqiao = {
         try {
             var b = this.COMPLETION_REGION;
             var c = images.clip(im, b[0], b[1], b[2] - b[0], b[3] - b[1]);
-            if (images.findColor(c, "#80CF4C", { threshold: 60 })) return true;
+            try {
+                if (images.findColor(c, "#80CF4C", { threshold: 60 })) return true;
+            } finally { try { c.recycle(); } catch (r) { } }
         } catch (e) { }
         return false;
     },
@@ -971,31 +1018,56 @@ sgs.tasks.xiaoqiao = {
         return sgs.vision.hasImage(this.KAIQI, this.KAIQI_REGION, this.KAIQI_TH);
     },
 
+    // 面板判定：Tab 文字在 = 面板已开。不靠「找不到头像就当面板开着」这种反推，
+    // 头像识别失败的原因可能是加载中、被弹窗盖住、模板失配，反推会直接跳到盲点。
+    _panelOpenExplicit: function () {
+        var v = sgs.vision;
+        return v.hasText(this.TAB_TEXT, this.TAB_REGION) || v.hasText(this.TAB_CHECK, this.TAB_REGION);
+    },
+
     _openPanel: function () {
         var v = sgs.vision;
-        // 主城能识别到头像 → 面板没开，点它；识别不到 → 视为面板已打开
-        var avatar = this._findAvatar();
-        if (!avatar) {
-            sgs.log.i("未找到小乔头像，视为助手面板已打开");
+        if (this._panelOpenExplicit()) {
+            sgs.log.i("小乔助手面板已打开");
             return;
         }
+        var t0 = new Date().getTime();
+        var avatar = this._findAvatar();
+        while (!avatar && new Date().getTime() - t0 < sgs.TIMEOUT.page) {
+            sleep(800);
+            avatar = this._findAvatar();
+        }
+        if (!avatar) throw new Error("未识别到小乔头像，无法打开助手面板");
+        // 左侧头像被屏幕边缘裁掉一半，点击点用固定坐标；识别点只用来确认头像确实存在
         v.clickPointAt(this.AVATAR_POINT[0], this.AVATAR_POINT[1]);
         sgs.log.i("已点击小乔头像 (" + this.AVATAR_POINT[0] + "," + this.AVATAR_POINT[1] + ") 匹配点 " + avatar.x + "," + avatar.y);
-        sleep(1800);
+        if (!this._waitPanel(1)) throw new Error("点击头像后未确认助手面板");
+        sgs.log.i("小乔助手面板已打开");
+    },
+
+    /** 等面板出现，最多 timeout 秒，命中即返回 true */
+    _waitPanel: function (timeoutSec) {
+        var t0 = new Date().getTime();
+        while (new Date().getTime() - t0 < timeoutSec * 1000) {
+            if (this._panelOpenExplicit()) return true;
+            sleep(700);
+        }
+        return false;
     },
 
     _openDailyTab: function () {
         var v = sgs.vision;
         for (var t = 1; t <= 3; t++) {
+            // 每轮先确认 Tab 还在。不在说明面板已经没了或点歪了，
+            // 这时继续按固定坐标点下去，点在什么功能上完全不可控（可能是花元宝的入口）
+            if (!this._panelOpenExplicit()) throw new Error("找不到「日常功能」Tab");
             v.tapRect(this.TAB_REGION);
             sgs.log.i("点击「日常功能」Tab（第 " + t + " 轮）");
-            sleep(1500);
-            var btn = v.waitImage(this.KAIQI, 4000, this.KAIQI_REGION, this.KAIQI_TH);
+            var btn = v.waitImage(this.KAIQI, sgs.TIMEOUT.page, this.KAIQI_REGION, this.KAIQI_TH);
             if (btn) { sgs.log.i("已识别到「开启」按钮"); return btn; }
             sgs.log.w("第 " + t + " 轮图识别未命中");
         }
-        sgs.log.w("图识别 3 轮均失败，改用固定坐标 " + this.KAIQI_POINT);
-        return { x: this.KAIQI_POINT[0], y: this.KAIQI_POINT[1] };
+        throw new Error("连续 3 次未出现「开启」按钮");
     },
 
     _closeResult: function () {
@@ -1062,8 +1134,9 @@ sgs.tasks.xiaoqiao = {
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
 
-        v.clickPointAt(this.KAIQI_POINT[0], this.KAIQI_POINT[1]);
-        sgs.log.i("已点击「开启」，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
+        // 点识别到的按钮本身，不用写死的坐标：图匹上了就说明位置在这，点空的风险为零
+        v.clickRect(btn);
+        sgs.log.i("已点击「开启」(" + btn.x + "," + btn.y + ")，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
 
         var deadline = new Date().getTime() + this.RUN_TIMEOUT;
@@ -1708,12 +1781,25 @@ sgs.ui = {
     },
 
     stopAll: function () {
-        try { if (this._thread) this._thread.interrupt(); } catch (e) { }
+        var th = this._thread;
+        var alive = false;
+        try { if (th) th.interrupt(); } catch (e) { }
+        // token 置空：让旧任务的 finally 认不出自己，不会把「已手动停止」之后的状态再改一遍
+        this._token = null;
+        // interrupt 只是打了个标记，线程还在 sleep 里，醒来前随时可能再点一下屏幕。
+        // 必须等它真的退出再放开互斥，否则新任务进来就是两个线程抢同一块屏
+        if (th) {
+            for (var w = 0; w < 40; w++) {
+                try { alive = th.isAlive(); } catch (e2) { alive = false; }
+                if (!alive) break;
+                sleep(100);
+            }
+        }
         this._t0 = 0;
         this._thread = null;
         this._lastResult = "已手动停止";
         this._paintBall(false);
-        toast("已请求停止");
+        toast(alive ? "已请求停止，线程未在 4s 内退出" : "已停止");
     },
 
     refreshLog: function () {
@@ -1926,15 +2012,9 @@ threads.start(function () {
                 sgs.ui.hidePanel();
             } else if (cmd.indexOf("reload") == 0) {
                 try {
-                    sgs.log.i("reload step1 拉取代码");
-                    sgs.pushLog();
-                    var nr = http.get(sgs.PC + "/src/main.js?t=" + new Date().getTime(), { timeout: 25000 });
-                    var ncode = nr.body.string();
-                    sgs.log.i("reload step2 拿到 " + ncode.length + " 字节");
-                    sgs.pushLog();
-                    if (ncode.length < 5000) throw new Error("代码过短，放弃");
-                    files.write("/storage/emulated/0/脚本/auto-sgs/_main.js", ncode);
-                    sgs.log.i("reload step3 已落盘，清理其它引擎");
+                    // 不再向 PC 拉 /src/main.js：那个路径映射早已不存在，且手机上的 _main.js
+                    // 就是最新 bundle，自己重启最省事，也避免和投递版 reload 走两种行为
+                    sgs.log.i("reload 本地重启");
                     sgs.pushLog();
                     // 先清僵尸引擎，否则新旧两个引擎会抢 /cmd
                     try {
@@ -1947,10 +2027,9 @@ threads.start(function () {
                             } catch (re) { }
                         }
                     } catch (rc) { }
-                    toast("代码已更新，重启中");
-                    sleep(400);
+                    toast("重启中");
                     engines.execScriptFile("/storage/emulated/0/脚本/auto-sgs/_main.js");
-                    sgs.log.i("reload step4 新引擎已拉起");
+                    sgs.log.i("reload 新引擎已拉起");
                     sgs.pushLog();
                     sleep(1500);
                     try { engines.myEngine().forceStop(); } catch (er) {
@@ -1963,7 +2042,13 @@ threads.start(function () {
             }
             sgs.pushLog();
         }
-    } catch (e) { }
+    } catch (e) {
+        // 原来这里是空 catch，__cmdFail 永远涨不上去：电脑端一挂，每轮仍要空等 8s 超时，
+        // 心跳被拖成 11s 一次，投递和停止指令全跟着变慢
+        __cmdFail++;
+        if (__cmdFail === 1) sgs.log.w("[cmd] 电脑端服务不可达，暂停远程指令：" + e);
+        if (__cmdFail >= 10) sgs.log.w("[cmd] 连续 10 次不可达，停用远程指令，只走本地投递");
+    }
   }
 });
 }

@@ -89,7 +89,13 @@ sgs.vision = {
             // AutoJs6 的 Image 背后是复用池，下一次 captureScreen 会让旧对象失效
             // （报 "图像资源已被回收"），所以拿到就立刻 clone 一份脱离池子
             try { if (raw) raw = raw.clone(); } catch (ec) { }
-            this._img = this._normalize(raw);
+            var next = this._normalize(raw);
+            // 换帧不能立刻回收上一帧：playerinfo 一次连取 3 帧做投票，调用方手里还攥着旧帧，
+            // 立即 recycle 会让第 738 行 getWidth() 报「图像资源已被回收」（真机实测踩到）。
+            // 改成延迟回收：只留最近 KEEP 帧，超出的才真正释放，泄漏有界（KEEP 帧 = 约 42MB）
+            var old = this._img;
+            this._img = next;
+            if (old && old !== next) this._retire(old);
             return this._img;
         } catch (e) {
             log("[vision] 截图失败 " + e);
@@ -142,9 +148,12 @@ sgs.vision = {
             try {
                 // AutoJs6: images.resize(img, size[, interpolation])，size 必须传数组
                 rs = images.resize(clip, [2772, 1280], "LINEAR");
+                // 只有 resize 真产出了新对象才能回收中间图；原地缩放时 rs 就是 clip 本身
+                if (rs !== clip) { try { clip.recycle(); } catch (r1) { } }
             } catch (er1) {
                 try {
                     rs = images.scale(clip, 2772 / b.w, 1280 / b.h, "LINEAR");
+                    if (rs !== clip) { try { clip.recycle(); } catch (r2) { } }
                 } catch (er2) {
                     sgs.log.e("[vision] resize/scale 都不可用，改走坐标映射：" + er2);
                     this._scale = { x: b.w / 2772, y: b.h / 1280 };
@@ -168,7 +177,28 @@ sgs.vision = {
         }
     },
 
-    reset: function () { this._img = null; this._band = null; this._scale = null; },
+    /**
+     * 退役帧暂存。最近 KEEP 帧一律不回收，超出的才真回收。
+     * 每帧 2772x1280 约 14MB，不回收跑几十帧就把 native 堆吃穿；回收太早又会踩到调用方的旧帧。
+     */
+    _retire: function (img) {
+        try {
+            if (!this._kept) this._kept = [];
+            this._kept.push(img);
+            while (this._kept.length > 3) {
+                var o = this._kept.shift();
+                if (o && o !== this._img) { try { o.recycle(); } catch (e) { } }
+            }
+        } catch (e) { }
+    },
+
+    reset: function () {
+        var arr = [this._img].concat(this._kept || []);
+        for (var i = 0; i < arr.length; i++) {
+            if (arr[i]) { try { arr[i].recycle(); } catch (e) { } }
+        }
+        this._img = null; this._kept = []; this._band = null; this._scale = null;
+    },
 
     /** [左,上,右,下] -> [x,y,w,h] */
     _toRegion: function (rect) {

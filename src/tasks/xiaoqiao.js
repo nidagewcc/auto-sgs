@@ -20,7 +20,7 @@ sgs.tasks.xiaoqiao = {
 
     KAIQI: "xiaoqiao/kaiqi.png",
     KAIQI_REGION: [1800, 700, 2150, 1050],
-    KAIQI_POINT: [1900, 940], // 图识别兜底 + 实际点击点：日常功能页右下角「开启」中心
+    KAIQI_POINT: [1900, 940], // 仅作文档参考；点击一律用图识别到的按钮中心，不做盲点兜底
     KAIQI_TH: 0.8,
 
     COMPLETION_REGION: [860, 1060, 1980, 1165],
@@ -48,7 +48,9 @@ sgs.tasks.xiaoqiao = {
         try {
             var b = this.COMPLETION_REGION;
             var c = images.clip(im, b[0], b[1], b[2] - b[0], b[3] - b[1]);
-            if (images.findColor(c, "#80CF4C", { threshold: 60 })) return true;
+            try {
+                if (images.findColor(c, "#80CF4C", { threshold: 60 })) return true;
+            } finally { try { c.recycle(); } catch (r) { } }
         } catch (e) { }
         return false;
     },
@@ -62,31 +64,56 @@ sgs.tasks.xiaoqiao = {
         return sgs.vision.hasImage(this.KAIQI, this.KAIQI_REGION, this.KAIQI_TH);
     },
 
+    // 面板判定：Tab 文字在 = 面板已开。不靠「找不到头像就当面板开着」这种反推，
+    // 头像识别失败的原因可能是加载中、被弹窗盖住、模板失配，反推会直接跳到盲点。
+    _panelOpenExplicit: function () {
+        var v = sgs.vision;
+        return v.hasText(this.TAB_TEXT, this.TAB_REGION) || v.hasText(this.TAB_CHECK, this.TAB_REGION);
+    },
+
     _openPanel: function () {
         var v = sgs.vision;
-        // 主城能识别到头像 → 面板没开，点它；识别不到 → 视为面板已打开
-        var avatar = this._findAvatar();
-        if (!avatar) {
-            sgs.log.i("未找到小乔头像，视为助手面板已打开");
+        if (this._panelOpenExplicit()) {
+            sgs.log.i("小乔助手面板已打开");
             return;
         }
+        var t0 = new Date().getTime();
+        var avatar = this._findAvatar();
+        while (!avatar && new Date().getTime() - t0 < sgs.TIMEOUT.page) {
+            sleep(800);
+            avatar = this._findAvatar();
+        }
+        if (!avatar) throw new Error("未识别到小乔头像，无法打开助手面板");
+        // 左侧头像被屏幕边缘裁掉一半，点击点用固定坐标；识别点只用来确认头像确实存在
         v.clickPointAt(this.AVATAR_POINT[0], this.AVATAR_POINT[1]);
         sgs.log.i("已点击小乔头像 (" + this.AVATAR_POINT[0] + "," + this.AVATAR_POINT[1] + ") 匹配点 " + avatar.x + "," + avatar.y);
-        sleep(1800);
+        if (!this._waitPanel(1)) throw new Error("点击头像后未确认助手面板");
+        sgs.log.i("小乔助手面板已打开");
+    },
+
+    /** 等面板出现，最多 timeout 秒，命中即返回 true */
+    _waitPanel: function (timeoutSec) {
+        var t0 = new Date().getTime();
+        while (new Date().getTime() - t0 < timeoutSec * 1000) {
+            if (this._panelOpenExplicit()) return true;
+            sleep(700);
+        }
+        return false;
     },
 
     _openDailyTab: function () {
         var v = sgs.vision;
         for (var t = 1; t <= 3; t++) {
+            // 每轮先确认 Tab 还在。不在说明面板已经没了或点歪了，
+            // 这时继续按固定坐标点下去，点在什么功能上完全不可控（可能是花元宝的入口）
+            if (!this._panelOpenExplicit()) throw new Error("找不到「日常功能」Tab");
             v.tapRect(this.TAB_REGION);
             sgs.log.i("点击「日常功能」Tab（第 " + t + " 轮）");
-            sleep(1500);
-            var btn = v.waitImage(this.KAIQI, 4000, this.KAIQI_REGION, this.KAIQI_TH);
+            var btn = v.waitImage(this.KAIQI, sgs.TIMEOUT.page, this.KAIQI_REGION, this.KAIQI_TH);
             if (btn) { sgs.log.i("已识别到「开启」按钮"); return btn; }
             sgs.log.w("第 " + t + " 轮图识别未命中");
         }
-        sgs.log.w("图识别 3 轮均失败，改用固定坐标 " + this.KAIQI_POINT);
-        return { x: this.KAIQI_POINT[0], y: this.KAIQI_POINT[1] };
+        throw new Error("连续 3 次未出现「开启」按钮");
     },
 
     _closeResult: function () {
@@ -153,8 +180,9 @@ sgs.tasks.xiaoqiao = {
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
 
-        v.clickPointAt(this.KAIQI_POINT[0], this.KAIQI_POINT[1]);
-        sgs.log.i("已点击「开启」，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
+        // 点识别到的按钮本身，不用写死的坐标：图匹上了就说明位置在这，点空的风险为零
+        v.clickRect(btn);
+        sgs.log.i("已点击「开启」(" + btn.x + "," + btn.y + ")，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
 
         var deadline = new Date().getTime() + this.RUN_TIMEOUT;

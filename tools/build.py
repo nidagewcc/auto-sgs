@@ -53,9 +53,22 @@ var pushedIdx = 0;
 var LOG_FILE = "/sdcard/Download/autosgs-logs/run.log";
 
 // 手机本地日志：不依赖电脑端服务，adb pull 就能看
+var LOG_MAX = 1024 * 1024;
 function appendFile(s) {
     try {
         files.ensureDir("/sdcard/Download/autosgs-logs/");
+        // 只留最近 1MB。日志涨到几十 MB 后 append 会明显变慢，adb tail/pull 也从毫秒变秒级，
+        // 轮转保留一份 .1 便于回看上一轮，剩下的直接丢
+        try {
+            if (files.exists(LOG_FILE)) {
+                var __sz = 0;
+                try { __sz = files.size(LOG_FILE); } catch (e1) { __sz = 0; }
+                if (__sz > LOG_MAX) {
+                    try { files.copy(LOG_FILE, LOG_FILE + ".1"); } catch (e2) { }
+                    files.write(LOG_FILE, "");
+                }
+            }
+        } catch (e3) { }
         files.append(LOG_FILE, s + "\\n");
     } catch (e) { }
 }
@@ -301,15 +314,9 @@ threads.start(function () {
                 sgs.ui.hidePanel();
             } else if (cmd.indexOf("reload") == 0) {
                 try {
-                    sgs.log.i("reload step1 拉取代码");
-                    sgs.pushLog();
-                    var nr = http.get(sgs.PC + "/src/main.js?t=" + new Date().getTime(), { timeout: 25000 });
-                    var ncode = nr.body.string();
-                    sgs.log.i("reload step2 拿到 " + ncode.length + " 字节");
-                    sgs.pushLog();
-                    if (ncode.length < 5000) throw new Error("代码过短，放弃");
-                    files.write("/storage/emulated/0/脚本/auto-sgs/_main.js", ncode);
-                    sgs.log.i("reload step3 已落盘，清理其它引擎");
+                    // 不再向 PC 拉 /src/main.js：那个路径映射早已不存在，且手机上的 _main.js
+                    // 就是最新 bundle，自己重启最省事，也避免和投递版 reload 走两种行为
+                    sgs.log.i("reload 本地重启");
                     sgs.pushLog();
                     // 先清僵尸引擎，否则新旧两个引擎会抢 /cmd
                     try {
@@ -322,10 +329,9 @@ threads.start(function () {
                             } catch (re) { }
                         }
                     } catch (rc) { }
-                    toast("代码已更新，重启中");
-                    sleep(400);
+                    toast("重启中");
                     engines.execScriptFile("/storage/emulated/0/脚本/auto-sgs/_main.js");
-                    sgs.log.i("reload step4 新引擎已拉起");
+                    sgs.log.i("reload 新引擎已拉起");
                     sgs.pushLog();
                     sleep(1500);
                     try { engines.myEngine().forceStop(); } catch (er) {
@@ -338,7 +344,13 @@ threads.start(function () {
             }
             sgs.pushLog();
         }
-    } catch (e) { }
+    } catch (e) {
+        // 原来这里是空 catch，__cmdFail 永远涨不上去：电脑端一挂，每轮仍要空等 8s 超时，
+        // 心跳被拖成 11s 一次，投递和停止指令全跟着变慢
+        __cmdFail++;
+        if (__cmdFail === 1) sgs.log.w("[cmd] 电脑端服务不可达，暂停远程指令：" + e);
+        if (__cmdFail >= 10) sgs.log.w("[cmd] 连续 10 次不可达，停用远程指令，只走本地投递");
+    }
   }
 });
 }
