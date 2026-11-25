@@ -35,28 +35,48 @@ if (__SRC.indexOf("_main.js") < 0) {
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 var LOGS = [];
 var pushedIdx = 0;
+var LOG_FILE = "/sdcard/Download/autosgs-logs/run.log";
+
+// 手机本地日志：不依赖电脑端服务，adb pull 就能看
+function appendFile(s) {
+    try {
+        files.ensureDir("/sdcard/Download/autosgs-logs/");
+        files.append(LOG_FILE, s + "\n");
+    } catch (e) { }
+}
 
 sgs.log = {
-    i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); },
-    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); },
-    e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); }
+    i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); appendFile(s); },
+    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); appendFile(s); },
+    e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); appendFile(s); }
 };
 
+// 电脑端服务不可达时自动停用，避免每次都刷异常
+var pushFail = 0;
+
 sgs.pushLog = function () {
-    if (pushedIdx >= LOGS.length) return;
+    if (pushFail >= 3 || pushedIdx >= LOGS.length) return;
     var chunk = LOGS.slice(pushedIdx).join("\n");
     pushedIdx = LOGS.length;
-    try { http.post(sgs.PC + "/log", chunk, { timeout: 15000 }); } catch (e) { log("pushLog 失败 " + e); }
+    try {
+        http.post(sgs.PC + "/log", chunk, { timeout: 15000 });
+        pushFail = 0;
+    } catch (e) {
+        pushFail++;
+        if (pushFail === 1) sgs.log.w("电脑端日志服务不可达，改为只写本地文件");
+    }
 };
 
 sgs.pushShot = function () {
+    if (pushFail >= 3) return;
     try {
         var im = sgs.vision ? sgs.vision.frame(true) : null;
         if (!im) return;
         var b64 = images.toBase64(im, "jpg", 55);
         http.post(sgs.PC + "/shot", b64, { timeout: 180000 });
     } catch (e) {
-        sgs.log.e("截图回传失败 " + e);
+        pushFail++;
+        if (pushFail === 1) sgs.log.w("截图回传不可用（电脑端服务不可达）");
     }
 };
 
@@ -137,7 +157,7 @@ sgs.vision = {
                     land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
                 } catch (eo) { land = (device.width > device.height); }
             }
-            this._capOk = requestScreenCapture(land);
+            this._capOk = this._autoGrant(land);
             log("[vision] 申请截图 land=" + land + " 结果=" + this._capOk);
             sleep(500);
             return this._capOk;
@@ -145,6 +165,39 @@ sgs.vision = {
             log("[vision] 截图权限异常 " + e);
             return false;
         }
+    },
+    /**
+     * 申请截图权限，同时用无障碍把系统授权弹框点掉。
+     * MediaProjection 授权框每次都会弹，坐标会随横竖屏变化，
+     * 用 text("共享屏幕") 定位比死坐标可靠。
+     */
+    _autoGrant: function (land) {
+        var th = threads.start(function () {
+            try {
+                for (var i = 0; i < 60; i++) {
+                    sleep(300);
+                    var b = null;
+                    try { b = text("共享屏幕").findOnce(); } catch (e0) { b = null; }
+                    if (!b) { try { b = textContains("共享屏幕").findOnce(); } catch (e1) { b = null; } }
+                    if (b) {
+                        var done = false;
+                        try { done = b.click(); } catch (e2) { done = false; }
+                        if (!done) {
+                            var bb = b.bounds();
+                            done = click(bb.centerX(), bb.centerY());
+                        }
+                        sgs.log.i("[vision] 自动点掉截图授权框 " + (done ? "成功" : "失败"));
+                        return;
+                    }
+                }
+                sgs.log.w("[vision] 18s 内没等到授权框（可能此前已授权）");
+            } catch (e3) { sgs.log.w("[vision] 自动授权异常 " + e3); }
+        });
+        var ok = false;
+        try { ok = requestScreenCapture(land); } catch (e4) { sgs.log.e("[vision] requestScreenCapture 异常 " + e4); }
+        try { th.interrupt(); } catch (e5) { }
+        sleep(600);
+        return ok;
     },
 
     /** 是否在主城：横屏 + 锚点或底部菜单文字 */
@@ -164,7 +217,11 @@ sgs.vision = {
         if (!force && this._img) return this._img;
         if (!this._capOk && !this.init()) return null;
         try {
-            this._img = this._normalize(captureScreen());
+            var raw = captureScreen();
+            // AutoJs6 的 Image 背后是复用池，下一次 captureScreen 会让旧对象失效
+            // （报 "图像资源已被回收"），所以拿到就立刻 clone 一份脱离池子
+            try { if (raw) raw = raw.clone(); } catch (ec) { }
+            this._img = this._normalize(raw);
             return this._img;
         } catch (e) {
             log("[vision] 截图失败 " + e);
@@ -199,6 +256,12 @@ sgs.vision = {
                     sgs.log.e("[vision] 未找到内容带 top=" + top + " bot=" + bot);
                     return img;
                 }
+                // 上下都没黑边 = 根本没有 letterbox（竖屏 app 铺满整屏），
+                // 这种情况下拉伸只会把画面搞变形，直接返回原图
+                if (top <= 2 && bot >= h - 3) {
+                    sgs.log.i("[vision] 无黑边，不做归一化，原样返回 " + w + "x" + h);
+                    return img;
+                }
                 var bh = bot - top + 1;
                 var bw = Math.round(bh * 2772 / 1280);
                 if (bw > w) bw = w;
@@ -209,7 +272,8 @@ sgs.vision = {
             var clip = images.clip(img, b.x, b.y, b.w, b.h);
             var rs = null;
             try {
-                rs = images.resize(clip, 2772, 1280, "LINEAR");
+                // AutoJs6: images.resize(img, size[, interpolation])，size 必须传数组
+                rs = images.resize(clip, [2772, 1280], "LINEAR");
             } catch (er1) {
                 try {
                     rs = images.scale(clip, 2772 / b.w, 1280 / b.h, "LINEAR");
@@ -253,7 +317,11 @@ sgs.vision = {
         ];
     },
 
-    /** OCR 引擎自适应：AutoX 用 gmlkit.ocr，AutoJs6 用 ocr()/ocr.mlkit */
+    /**
+     * OCR 引擎自适应
+     * - AutoX: gmlkit.ocr(img, "zh") -> { text }
+     * - AutoJs6: ocr(img) -> string[]（文本数组），需要 join
+     */
     _ocr: function (img) {
         try {
             if (typeof gmlkit !== "undefined" && gmlkit && gmlkit.ocr) {
@@ -268,10 +336,15 @@ sgs.vision = {
             if (typeof ocr !== "undefined") {
                 if (this._ocrEng === undefined) sgs.log.i("[vision] OCR 引擎 ocr (AutoJs6)");
                 this._ocrEng = "ocr";
-                var r2 = ocr(img, "zh");
+                var r2 = ocr(img);
+                if (r2 && r2.length !== undefined && typeof r2 !== "string") {
+                    // 文本数组：按行拼回去
+                    var arr = [];
+                    for (var i = 0; i < r2.length; i++) arr.push(String(r2[i]));
+                    return arr.join("\n");
+                }
                 if (typeof r2 === "string") return r2;
                 if (r2 && r2.text) return String(r2.text);
-                if (r2 && r2.fullText) return String(r2.fullText);
                 return "";
             }
         } catch (e2) { sgs.log.e("[vision] ocr() 失败 " + e2); }
@@ -333,9 +406,26 @@ sgs.vision = {
         rect = this._mapRect(rect);
         var th = threshold || sgs.THRESHOLD.image;
 
+        // AutoJs6 要求 region 严格落在图像内部（贴边会被判 "not within the image"），收 1px
+        if (rect) {
+            var iw = img.getWidth(), ih = img.getHeight();
+            rect = [
+                Math.max(0, Math.min(rect[0], iw - 2)),
+                Math.max(0, Math.min(rect[1], ih - 2)),
+                Math.max(1, Math.min(rect[2], iw - 1)),
+                Math.max(1, Math.min(rect[3], ih - 1))
+            ];
+            if (rect[2] - rect[0] < 2 || rect[3] - rect[1] < 2) return null;
+        }
+
+        // 原生 region 一律不用：AutoJs6 把数组按 [x,y,w,h] 解释且禁止贴边，
+        // 校验文案和实际语义对不上，试探成本太高。统一走 clip 裁 ROI，两平台都稳。
         if (rect && this._regionOk !== false) {
             try {
-                var hit = images.findImage(img, tpl, { threshold: th, region: rect });
+                var hit = images.findImage(img, tpl, {
+                    threshold: th,
+                    region: [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]
+                });
                 if (this._regionOk === undefined) {
                     this._regionOk = true;
                     sgs.log.i("[vision] 原生 region 可用");
@@ -461,7 +551,9 @@ sgs.game = {
 
         v._capOk = false;
         v.reset();
-        v._landForce = false;
+        // 进程内「首次」申请决定画布方向，之后改参数无效。
+        // AutoJs6 的 requestScreenCapture(true) 确实能给出 2772x1280，所以首次就强制横屏。
+        v._landForce = true;
         if (!v.init()) throw new Error("截图权限失败");
 
         var t0 = new Date().getTime();
@@ -497,13 +589,15 @@ sgs.game = {
             if (blank >= 3) {
                 var cur = "";
                 try { cur = currentPackage(); } catch (e) { cur = ""; }
-                sgs.log.i("第" + blank + "次认不出画面，前台=" + cur);
-                if (cur !== g.PKG && launched < 1) {
+                var inGame = (cur === g.PKG);
+                sgs.log.i("第" + blank + "次认不出画面，前台=" + (cur || "未知"));
+                // 前台为空说明拿不到判定（无障碍异常），按"不在游戏"处理；
+                // 只要当前前台确实是游戏就别拉，避免打断加载导致 loading 循环掉线
+                if (!inGame && launched < 2) {
                     launched++;
-                    sgs.log.i("拉起游戏（仅一次）");
+                    sgs.log.i("拉起游戏（第 " + launched + " 次）");
                     try { app.launchPackage(g.PKG); } catch (e1) { sgs.log.e("拉起失败 " + e1); }
-                    sleep(8000);
-                    g._initCap(false);
+                    sleep(12000);
                     blank = 0;
                 }
             }
@@ -1544,21 +1638,32 @@ sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) 
 try { sgs.log.i(device.brand + " " + device.model + " / Android " + device.release); } catch (e0) { }
 
 // step1 清理残留引擎：重复 bootstrap 会留下多个引擎抢 /cmd，只保留自己
+// 注意 engines.all() 直接返回 ScriptEngine，AutoX 的 .getEngine() 在 AutoJs6 上取不到
 try {
     var __mine = engines.myEngine();
+    var __myId = __mine.getId();
     var __all = engines.all();
     var __killed = 0;
     for (var __i = 0; __i < __all.length; __i++) {
         try {
-            var __en = __all[__i].getEngine();
-            if (__en && __en.getId() != __mine.getId()) { __en.forceStop(); __killed++; }
+            var __en = __all[__i];
+            var __id = -1;
+            try { __id = __en.getId(); } catch (__e0) { __id = -1; }
+            if (__id < 0) {
+                try { __id = __en.getEngine().getId(); } catch (__e1) { __id = -1; }
+            }
+            if (__id >= 0 && __id != __myId) {
+                try { __en.forceStop(); } catch (__e2) { try { __en.getEngine().forceStop(); } catch (__e3) { } }
+                __killed++;
+            }
         } catch (__eq) { }
     }
     sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
 } catch (__ec) { }
 
-sgs.log.i("step2 截图权限（不主动切前台，避免游戏 loading/掉线）");
+sgs.log.i("step2 截图权限（强制横屏：进程内首次申请就决定画布方向）");
 try {
+    sgs.vision._landForce = true;
     var okCap = sgs.vision.init();
     sgs.log.i("截图权限 " + okCap);
     if (!okCap) {
@@ -1581,8 +1686,23 @@ toast("启动完成");
 sgs.log.i("step4 截图自检");
 try { sleep(4000); sgs.pushShot(); } catch (e4) { sgs.log.e("pushShot 失败 " + e4); }
 
+// 冒烟开关：存在 autotask.txt 就自动跑一次该任务，跑完删除，方便无人值守验证
+try {
+    var __tf = "/sdcard/Download/autosgs-logs/autotask.txt";
+    if (files.exists(__tf)) {
+        var __tid = String(files.read(__tf)).replace(/[ \r\n\t]+/g, "");
+        files.remove(__tf);
+        if (__tid) {
+            sgs.log.i("冒烟任务 " + __tid);
+            sgs.ui.runTask(__tid, "冒烟-" + __tid);
+            sgs.log.i("冒烟任务结束 " + __tid);
+        }
+    }
+} catch (e5) { sgs.log.e("冒烟任务异常 " + e5); }
+
 // 常驻心跳：推日志 + 拉电脑端指令（3 秒一次），这样电脑可以直接指挥手机，不用人点
 var __hb = 0;
+var __cmdFail = 0;
 threads.start(function () {
   while (true) {
     sleep(3000);
@@ -1591,8 +1711,10 @@ threads.start(function () {
         try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
     }
     try { sgs.pushLog(); } catch (e) { }
+    if (__cmdFail >= 10) continue;
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });
+        __cmdFail = 0;
         var cmd = String(cr.body.string()).replace(/[ \r\n\t]+/g, "");
         if (cmd && cmd != "none") {
             sgs.log.i("[cmd] " + cmd);

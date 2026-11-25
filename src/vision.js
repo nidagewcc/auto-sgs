@@ -21,7 +21,7 @@ sgs.vision = {
                     land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
                 } catch (eo) { land = (device.width > device.height); }
             }
-            this._capOk = requestScreenCapture(land);
+            this._capOk = this._autoGrant(land);
             log("[vision] 申请截图 land=" + land + " 结果=" + this._capOk);
             sleep(500);
             return this._capOk;
@@ -29,6 +29,39 @@ sgs.vision = {
             log("[vision] 截图权限异常 " + e);
             return false;
         }
+    },
+    /**
+     * 申请截图权限，同时用无障碍把系统授权弹框点掉。
+     * MediaProjection 授权框每次都会弹，坐标会随横竖屏变化，
+     * 用 text("共享屏幕") 定位比死坐标可靠。
+     */
+    _autoGrant: function (land) {
+        var th = threads.start(function () {
+            try {
+                for (var i = 0; i < 60; i++) {
+                    sleep(300);
+                    var b = null;
+                    try { b = text("共享屏幕").findOnce(); } catch (e0) { b = null; }
+                    if (!b) { try { b = textContains("共享屏幕").findOnce(); } catch (e1) { b = null; } }
+                    if (b) {
+                        var done = false;
+                        try { done = b.click(); } catch (e2) { done = false; }
+                        if (!done) {
+                            var bb = b.bounds();
+                            done = click(bb.centerX(), bb.centerY());
+                        }
+                        sgs.log.i("[vision] 自动点掉截图授权框 " + (done ? "成功" : "失败"));
+                        return;
+                    }
+                }
+                sgs.log.w("[vision] 18s 内没等到授权框（可能此前已授权）");
+            } catch (e3) { sgs.log.w("[vision] 自动授权异常 " + e3); }
+        });
+        var ok = false;
+        try { ok = requestScreenCapture(land); } catch (e4) { sgs.log.e("[vision] requestScreenCapture 异常 " + e4); }
+        try { th.interrupt(); } catch (e5) { }
+        sleep(600);
+        return ok;
     },
 
     /** 是否在主城：横屏 + 锚点或底部菜单文字 */
@@ -48,7 +81,11 @@ sgs.vision = {
         if (!force && this._img) return this._img;
         if (!this._capOk && !this.init()) return null;
         try {
-            this._img = this._normalize(captureScreen());
+            var raw = captureScreen();
+            // AutoJs6 的 Image 背后是复用池，下一次 captureScreen 会让旧对象失效
+            // （报 "图像资源已被回收"），所以拿到就立刻 clone 一份脱离池子
+            try { if (raw) raw = raw.clone(); } catch (ec) { }
+            this._img = this._normalize(raw);
             return this._img;
         } catch (e) {
             log("[vision] 截图失败 " + e);
@@ -83,6 +120,12 @@ sgs.vision = {
                     sgs.log.e("[vision] 未找到内容带 top=" + top + " bot=" + bot);
                     return img;
                 }
+                // 上下都没黑边 = 根本没有 letterbox（竖屏 app 铺满整屏），
+                // 这种情况下拉伸只会把画面搞变形，直接返回原图
+                if (top <= 2 && bot >= h - 3) {
+                    sgs.log.i("[vision] 无黑边，不做归一化，原样返回 " + w + "x" + h);
+                    return img;
+                }
                 var bh = bot - top + 1;
                 var bw = Math.round(bh * 2772 / 1280);
                 if (bw > w) bw = w;
@@ -93,7 +136,8 @@ sgs.vision = {
             var clip = images.clip(img, b.x, b.y, b.w, b.h);
             var rs = null;
             try {
-                rs = images.resize(clip, 2772, 1280, "LINEAR");
+                // AutoJs6: images.resize(img, size[, interpolation])，size 必须传数组
+                rs = images.resize(clip, [2772, 1280], "LINEAR");
             } catch (er1) {
                 try {
                     rs = images.scale(clip, 2772 / b.w, 1280 / b.h, "LINEAR");
@@ -137,7 +181,11 @@ sgs.vision = {
         ];
     },
 
-    /** OCR 引擎自适应：AutoX 用 gmlkit.ocr，AutoJs6 用 ocr()/ocr.mlkit */
+    /**
+     * OCR 引擎自适应
+     * - AutoX: gmlkit.ocr(img, "zh") -> { text }
+     * - AutoJs6: ocr(img) -> string[]（文本数组），需要 join
+     */
     _ocr: function (img) {
         try {
             if (typeof gmlkit !== "undefined" && gmlkit && gmlkit.ocr) {
@@ -152,10 +200,15 @@ sgs.vision = {
             if (typeof ocr !== "undefined") {
                 if (this._ocrEng === undefined) sgs.log.i("[vision] OCR 引擎 ocr (AutoJs6)");
                 this._ocrEng = "ocr";
-                var r2 = ocr(img, "zh");
+                var r2 = ocr(img);
+                if (r2 && r2.length !== undefined && typeof r2 !== "string") {
+                    // 文本数组：按行拼回去
+                    var arr = [];
+                    for (var i = 0; i < r2.length; i++) arr.push(String(r2[i]));
+                    return arr.join("\n");
+                }
                 if (typeof r2 === "string") return r2;
                 if (r2 && r2.text) return String(r2.text);
-                if (r2 && r2.fullText) return String(r2.fullText);
                 return "";
             }
         } catch (e2) { sgs.log.e("[vision] ocr() 失败 " + e2); }
@@ -217,9 +270,26 @@ sgs.vision = {
         rect = this._mapRect(rect);
         var th = threshold || sgs.THRESHOLD.image;
 
+        // AutoJs6 要求 region 严格落在图像内部（贴边会被判 "not within the image"），收 1px
+        if (rect) {
+            var iw = img.getWidth(), ih = img.getHeight();
+            rect = [
+                Math.max(0, Math.min(rect[0], iw - 2)),
+                Math.max(0, Math.min(rect[1], ih - 2)),
+                Math.max(1, Math.min(rect[2], iw - 1)),
+                Math.max(1, Math.min(rect[3], ih - 1))
+            ];
+            if (rect[2] - rect[0] < 2 || rect[3] - rect[1] < 2) return null;
+        }
+
+        // 原生 region 一律不用：AutoJs6 把数组按 [x,y,w,h] 解释且禁止贴边，
+        // 校验文案和实际语义对不上，试探成本太高。统一走 clip 裁 ROI，两平台都稳。
         if (rect && this._regionOk !== false) {
             try {
-                var hit = images.findImage(img, tpl, { threshold: th, region: rect });
+                var hit = images.findImage(img, tpl, {
+                    threshold: th,
+                    region: [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]
+                });
                 if (this._regionOk === undefined) {
                     this._regionOk = true;
                     sgs.log.i("[vision] 原生 region 可用");

@@ -25,7 +25,9 @@ sgs.game = {
 
         v._capOk = false;
         v.reset();
-        v._landForce = false;
+        // 进程内「首次」申请决定画布方向，之后改参数无效。
+        // AutoJs6 的 requestScreenCapture(true) 确实能给出 2772x1280，所以首次就强制横屏。
+        v._landForce = true;
         if (!v.init()) throw new Error("截图权限失败");
 
         var t0 = new Date().getTime();
@@ -61,13 +63,15 @@ sgs.game = {
             if (blank >= 3) {
                 var cur = "";
                 try { cur = currentPackage(); } catch (e) { cur = ""; }
-                sgs.log.i("第" + blank + "次认不出画面，前台=" + cur);
-                if (cur !== g.PKG && launched < 1) {
+                var inGame = (cur === g.PKG);
+                sgs.log.i("第" + blank + "次认不出画面，前台=" + (cur || "未知"));
+                // 前台为空说明拿不到判定（无障碍异常），按"不在游戏"处理；
+                // 只要当前前台确实是游戏就别拉，避免打断加载导致 loading 循环掉线
+                if (!inGame && launched < 2) {
                     launched++;
-                    sgs.log.i("拉起游戏（仅一次）");
+                    sgs.log.i("拉起游戏（第 " + launched + " 次）");
                     try { app.launchPackage(g.PKG); } catch (e1) { sgs.log.e("拉起失败 " + e1); }
-                    sleep(8000);
-                    g._initCap(false);
+                    sleep(12000);
                     blank = 0;
                 }
             }

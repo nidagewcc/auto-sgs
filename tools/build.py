@@ -50,28 +50,48 @@ LOGBLOCK = u"""// ===== 日志与回传 =====
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 var LOGS = [];
 var pushedIdx = 0;
+var LOG_FILE = "/sdcard/Download/autosgs-logs/run.log";
+
+// 手机本地日志：不依赖电脑端服务，adb pull 就能看
+function appendFile(s) {
+    try {
+        files.ensureDir("/sdcard/Download/autosgs-logs/");
+        files.append(LOG_FILE, s + "\\n");
+    } catch (e) { }
+}
 
 sgs.log = {
-    i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); },
-    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); },
-    e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); }
+    i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); appendFile(s); },
+    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); appendFile(s); },
+    e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); appendFile(s); }
 };
 
+// 电脑端服务不可达时自动停用，避免每次都刷异常
+var pushFail = 0;
+
 sgs.pushLog = function () {
-    if (pushedIdx >= LOGS.length) return;
+    if (pushFail >= 3 || pushedIdx >= LOGS.length) return;
     var chunk = LOGS.slice(pushedIdx).join("\\n");
     pushedIdx = LOGS.length;
-    try { http.post(sgs.PC + "/log", chunk, { timeout: 15000 }); } catch (e) { log("pushLog 失败 " + e); }
+    try {
+        http.post(sgs.PC + "/log", chunk, { timeout: 15000 });
+        pushFail = 0;
+    } catch (e) {
+        pushFail++;
+        if (pushFail === 1) sgs.log.w("电脑端日志服务不可达，改为只写本地文件");
+    }
 };
 
 sgs.pushShot = function () {
+    if (pushFail >= 3) return;
     try {
         var im = sgs.vision ? sgs.vision.frame(true) : null;
         if (!im) return;
         var b64 = images.toBase64(im, "jpg", 55);
         http.post(sgs.PC + "/shot", b64, { timeout: 180000 });
     } catch (e) {
-        sgs.log.e("截图回传失败 " + e);
+        pushFail++;
+        if (pushFail === 1) sgs.log.w("截图回传不可用（电脑端服务不可达）");
     }
 };
 """
@@ -81,21 +101,32 @@ sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) 
 try { sgs.log.i(device.brand + " " + device.model + " / Android " + device.release); } catch (e0) { }
 
 // step1 清理残留引擎：重复 bootstrap 会留下多个引擎抢 /cmd，只保留自己
+// 注意 engines.all() 直接返回 ScriptEngine，AutoX 的 .getEngine() 在 AutoJs6 上取不到
 try {
     var __mine = engines.myEngine();
+    var __myId = __mine.getId();
     var __all = engines.all();
     var __killed = 0;
     for (var __i = 0; __i < __all.length; __i++) {
         try {
-            var __en = __all[__i].getEngine();
-            if (__en && __en.getId() != __mine.getId()) { __en.forceStop(); __killed++; }
+            var __en = __all[__i];
+            var __id = -1;
+            try { __id = __en.getId(); } catch (__e0) { __id = -1; }
+            if (__id < 0) {
+                try { __id = __en.getEngine().getId(); } catch (__e1) { __id = -1; }
+            }
+            if (__id >= 0 && __id != __myId) {
+                try { __en.forceStop(); } catch (__e2) { try { __en.getEngine().forceStop(); } catch (__e3) { } }
+                __killed++;
+            }
         } catch (__eq) { }
     }
     sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
 } catch (__ec) { }
 
-sgs.log.i("step2 截图权限（不主动切前台，避免游戏 loading/掉线）");
+sgs.log.i("step2 截图权限（强制横屏：进程内首次申请就决定画布方向）");
 try {
+    sgs.vision._landForce = true;
     var okCap = sgs.vision.init();
     sgs.log.i("截图权限 " + okCap);
     if (!okCap) {
@@ -118,8 +149,23 @@ toast("启动完成");
 sgs.log.i("step4 截图自检");
 try { sleep(4000); sgs.pushShot(); } catch (e4) { sgs.log.e("pushShot 失败 " + e4); }
 
+// 冒烟开关：存在 autotask.txt 就自动跑一次该任务，跑完删除，方便无人值守验证
+try {
+    var __tf = "/sdcard/Download/autosgs-logs/autotask.txt";
+    if (files.exists(__tf)) {
+        var __tid = String(files.read(__tf)).replace(/[ \r\n\t]+/g, "");
+        files.remove(__tf);
+        if (__tid) {
+            sgs.log.i("冒烟任务 " + __tid);
+            sgs.ui.runTask(__tid, "冒烟-" + __tid);
+            sgs.log.i("冒烟任务结束 " + __tid);
+        }
+    }
+} catch (e5) { sgs.log.e("冒烟任务异常 " + e5); }
+
 // 常驻心跳：推日志 + 拉电脑端指令（3 秒一次），这样电脑可以直接指挥手机，不用人点
 var __hb = 0;
+var __cmdFail = 0;
 threads.start(function () {
   while (true) {
     sleep(3000);
@@ -128,8 +174,10 @@ threads.start(function () {
         try { sgs.log.i("♥ 心跳 " + __hb + " 次"); sgs.pushLog(); } catch (e) { }
     }
     try { sgs.pushLog(); } catch (e) { }
+    if (__cmdFail >= 10) continue;
     try {
         var cr = http.get(sgs.PC + "/cmd", { timeout: 8000 });
+        __cmdFail = 0;
         var cmd = String(cr.body.string()).replace(/[ \\r\\n\\t]+/g, "");
         if (cmd && cmd != "none") {
             sgs.log.i("[cmd] " + cmd);
