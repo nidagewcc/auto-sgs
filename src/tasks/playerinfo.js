@@ -14,8 +14,9 @@ sgs.tasks.playerinfo = {
         { key: "combat_power", parser: "power" },
         { key: "physical", parser: "fraction" },
         { key: "energy", parser: "fraction" },
-        { key: "sycee", parser: "int" },
-        { key: "jade", parser: "int" }
+        // 元宝/玉石超过百万时 UI 会缩写成「139万」，必须走带单位的解析
+        { key: "sycee", parser: "power" },
+        { key: "jade", parser: "power" }
     ],
 
     // 这些字段历史上抖动过，多帧投票；其余单帧即可

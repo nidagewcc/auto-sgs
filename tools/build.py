@@ -195,6 +195,45 @@ threads.start(function () {
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
                 }
+                // 单步点击：tap:x,y —— 点完自动存档一帧，方便逐步确认界面（换号这类一次性流程用）
+                if (__tid2.indexOf("tap:") === 0) {
+                    var __xy = __tid2.substring(4).split(",");
+                    var __tx = parseInt(__xy[0], 10), __ty = parseInt(__xy[1], 10);
+                    sgs.log.i("[tap] " + __tx + "," + __ty);
+                    try {
+                        sgs.vision.frame(true);
+                        click(__tx, __ty);
+                        sleep(2000);
+                        var __im = sgs.vision.frame(true);
+                        if (__im) {
+                            var __p = "/sdcard/Download/autosgs-logs/shot_tap_" + __tx + "x" + __ty + ".png";
+                            images.save(__im, __p);
+                            sgs.log.i("[tap] 截图 " + __p);
+                        }
+                    } catch (__es) { sgs.log.w("[tap] 异常 " + __es); }
+                    continue;
+                }
+                // 收/放悬浮球：ball:hide / ball:show —— 浮球压在游戏右侧按钮上会抢触摸
+                if (__tid2.indexOf("ball:") === 0) {
+                    try {
+                        if (__tid2 === "ball:hide") { sgs.ui.hideBall(); sgs.log.i("[ball] 已收起悬浮球"); }
+                        else { sgs.ui.showBall(); sgs.log.i("[ball] 已显示悬浮球"); }
+                    } catch (__eb) { sgs.log.w("[ball] " + __eb); }
+                    continue;
+                }
+                // 单存一帧：shot:名字
+                if (__tid2.indexOf("shot:") === 0) {
+                    try {
+                        var __nm = __tid2.substring(5) || "now";
+                        var __im2 = sgs.vision.frame(true);
+                        if (__im2) {
+                            var __p2 = "/sdcard/Download/autosgs-logs/shot_" + __nm + ".png";
+                            images.save(__im2, __p2);
+                            sgs.log.i("[shot] " + __p2);
+                        }
+                    } catch (__es2) { sgs.log.w("[shot] 失败 " + __es2); }
+                    continue;
+                }
                 if (__tid2) {
                     __busy = true;
                     sgs.log.i("[投递] " + __tid2);

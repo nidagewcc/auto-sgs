@@ -132,6 +132,13 @@ sgs.tasks.xiaoqiao = {
                 sleep(700);
             }
         }
+        // 4) 陌生子界面兜底：误触进拍卖 / 图鉴 / 军团等页面时，点左上角返回
+        //    实测主城 2772x1280 下点 (70,70) 能从「全服拍卖」退回主城
+        for (var q = 1; q <= 3 && !sgs.vision.isHome(); q++) {
+            sgs.log.w("未回主城，点左上角返回（第 " + q + " 轮）");
+            v.clickPointAt(70, 70);
+            sleep(2500);
+        }
         if (!sgs.vision.isHome()) throw new Error("面板未能关闭并回到主城");
         sgs.log.i("已确认回到主城");
     },

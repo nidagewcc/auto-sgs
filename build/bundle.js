@@ -681,8 +681,9 @@ sgs.tasks.playerinfo = {
         { key: "combat_power", parser: "power" },
         { key: "physical", parser: "fraction" },
         { key: "energy", parser: "fraction" },
-        { key: "sycee", parser: "int" },
-        { key: "jade", parser: "int" }
+        // 元宝/玉石超过百万时 UI 会缩写成「139万」，必须走带单位的解析
+        { key: "sycee", parser: "power" },
+        { key: "jade", parser: "power" }
     ],
 
     // 这些字段历史上抖动过，多帧投票；其余单帧即可
@@ -1043,6 +1044,13 @@ sgs.tasks.xiaoqiao = {
             } else {
                 sleep(700);
             }
+        }
+        // 4) 陌生子界面兜底：误触进拍卖 / 图鉴 / 军团等页面时，点左上角返回
+        //    实测主城 2772x1280 下点 (70,70) 能从「全服拍卖」退回主城
+        for (var q = 1; q <= 3 && !sgs.vision.isHome(); q++) {
+            sgs.log.w("未回主城，点左上角返回（第 " + q + " 轮）");
+            v.clickPointAt(70, 70);
+            sleep(2500);
         }
         if (!sgs.vision.isHome()) throw new Error("面板未能关闭并回到主城");
         sgs.log.i("已确认回到主城");
@@ -1793,6 +1801,45 @@ threads.start(function () {
                     sleep(1500);
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
+                }
+                // 单步点击：tap:x,y —— 点完自动存档一帧，方便逐步确认界面（换号这类一次性流程用）
+                if (__tid2.indexOf("tap:") === 0) {
+                    var __xy = __tid2.substring(4).split(",");
+                    var __tx = parseInt(__xy[0], 10), __ty = parseInt(__xy[1], 10);
+                    sgs.log.i("[tap] " + __tx + "," + __ty);
+                    try {
+                        sgs.vision.frame(true);
+                        click(__tx, __ty);
+                        sleep(2000);
+                        var __im = sgs.vision.frame(true);
+                        if (__im) {
+                            var __p = "/sdcard/Download/autosgs-logs/shot_tap_" + __tx + "x" + __ty + ".png";
+                            images.save(__im, __p);
+                            sgs.log.i("[tap] 截图 " + __p);
+                        }
+                    } catch (__es) { sgs.log.w("[tap] 异常 " + __es); }
+                    continue;
+                }
+                // 收/放悬浮球：ball:hide / ball:show —— 浮球压在游戏右侧按钮上会抢触摸
+                if (__tid2.indexOf("ball:") === 0) {
+                    try {
+                        if (__tid2 === "ball:hide") { sgs.ui.hideBall(); sgs.log.i("[ball] 已收起悬浮球"); }
+                        else { sgs.ui.showBall(); sgs.log.i("[ball] 已显示悬浮球"); }
+                    } catch (__eb) { sgs.log.w("[ball] " + __eb); }
+                    continue;
+                }
+                // 单存一帧：shot:名字
+                if (__tid2.indexOf("shot:") === 0) {
+                    try {
+                        var __nm = __tid2.substring(5) || "now";
+                        var __im2 = sgs.vision.frame(true);
+                        if (__im2) {
+                            var __p2 = "/sdcard/Download/autosgs-logs/shot_" + __nm + ".png";
+                            images.save(__im2, __p2);
+                            sgs.log.i("[shot] " + __p2);
+                        }
+                    } catch (__es2) { sgs.log.w("[shot] 失败 " + __es2); }
+                    continue;
                 }
                 if (__tid2) {
                     __busy = true;
