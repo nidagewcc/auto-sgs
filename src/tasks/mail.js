@@ -14,7 +14,52 @@ sgs.tasks.mail = {
     CLOSE_REGION: [2200, 80, 2500, 360],
     REWARD: "daily_task/reward_popup.png",
     REWARD_REGION: [900, 80, 1900, 330],
+    REWARD_WIDE_REGION: [500, 70, 2250, 420],
+    EMPTY_REGIONS: [[600, 300, 2200, 950], [700, 900, 2100, 1160]],
+    EMPTY_PATTERNS: [/暂无邮件/, /没有可领取的附件/, /暂无可领取的附件/, /没有可领取的邮件/, /暂无可领取的邮件/, /无可领取/],
+    EVIDENCE_WAIT_MS: 5000,
+    EVIDENCE_POLL_MS: 500,
     DISMISS: [1386, 1180],
+
+    _readEvidence: function (img) {
+        var v = sgs.vision, raw = [];
+        if (!img) return { reward: false, empty: false, raw: raw };
+        var reward = !!v.find(this.REWARD, 0.8, this.REWARD_REGION, img)
+            || !!v.find(this.REWARD, 0.8, this.REWARD_WIDE_REGION, img)
+            || v.hasText("恭喜获得", this.REWARD_REGION, img)
+            || v.hasText("恭喜获得", this.REWARD_WIDE_REGION, img);
+        var empty = false;
+        for (var i = 0; i < this.EMPTY_REGIONS.length && !empty; i++) {
+            var text = v.ocrRect(this.EMPTY_REGIONS[i], img).replace(/\s+/g, "");
+            raw.push(text);
+            for (var j = 0; j < this.EMPTY_PATTERNS.length; j++) {
+                if (this.EMPTY_PATTERNS[j].test(text)) { empty = true; break; }
+            }
+        }
+        return { reward: reward, empty: empty, raw: raw };
+    },
+
+    _waitClaimEvidence: function () {
+        var v = sgs.vision, deadline = new Date().getTime() + this.EVIDENCE_WAIT_MS;
+        var result = { reward: false, empty: false, raw: [] };
+        while (new Date().getTime() < deadline) {
+            var img = v.frame(true);
+            var current = this._readEvidence(img);
+            result.raw = result.raw.concat(current.raw);
+            if (current.reward) result.reward = true;
+            if (current.empty) result.empty = true;
+            if (result.reward || result.empty) return result;
+            sleep(this.EVIDENCE_POLL_MS);
+        }
+        return result;
+    },
+
+    _saveClaimDiagnostic: function (raw) {
+        try {
+            var p = sgs.debugShots.save(sgs.vision.frame(true), "mail_claim_unconfirmed");
+            sgs.log.w("[mail] 领取证据不足，已保存调试图 " + p + " OCR=" + JSON.stringify(raw));
+        } catch (e) { sgs.log.w("[mail] 领取证据不足，调试图保存失败 " + e); }
+    },
 
     run: function (options) {
         var v = sgs.vision;
@@ -43,7 +88,7 @@ sgs.tasks.mail = {
         //    但第一轮必须真的识别到按钮：识别不到说明模板失配或弹窗没开成，
         //    继续静默走完会给出一个假的「已领取」结论，宁可直接报错。
         progress("领取邮件", "点击全部领取，核对奖励或无可领取状态");
-        var rewardSeen = false, emptySeen = false;
+        var rewardSeen = false, emptySeen = false, evidenceRaw = [];
         for (var ci = 1; ci <= 2; ci++) {
             check();
             v.frame(true);
@@ -53,16 +98,14 @@ sgs.tasks.mail = {
                 break;
             }
             sgs.log.i("点击「全部领取」（第 " + ci + " 轮）");
-            sleep(2000);
-            var claimImg = v.frame(true);
-            if (claimImg) {
-                if (v.find(this.REWARD, 0.8, this.REWARD_REGION, claimImg) || v.hasText("恭喜获得", this.REWARD_REGION, claimImg)) rewardSeen = true;
-                var body = v.ocrRect([600, 300, 2200, 950], claimImg).replace(/\s+/g, "");
-                if (/暂无邮件|没有可领取的附件|暂无可领取的附件|没有可领取的邮件/.test(body)) emptySeen = true;
-            }
+            var evidence = this._waitClaimEvidence();
+            rewardSeen = rewardSeen || evidence.reward;
+            emptySeen = emptySeen || evidence.empty;
+            evidenceRaw = evidenceRaw.concat(evidence.raw);
             v.clickPointAt(this.DISMISS[0], this.DISMISS[1]);
             sleep(600);
         }
+        if (!rewardSeen && !emptySeen) this._saveClaimDiagnostic(evidenceRaw);
 
         progress("返回主城", "关闭邮件窗口并复检主城");
         // 3) 关闭弹窗，确认回主城

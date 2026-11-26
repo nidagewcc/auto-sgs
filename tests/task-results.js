@@ -71,13 +71,39 @@ for (const id of ['mail', 'xiaoqiao', 'junqing', 'zhuxian']) {
 for (const evidence of ['reward-template', 'reward-text', 'empty', 'none']) {
     test('mail: ' + evidence + ' determines result, clicking alone proves nothing', () => {
         const f = load('mail');
-        f.vision.find = template => evidence === 'reward-template' && template === f.task.REWARD ? { x: 1, y: 2 } : null;
-        f.vision.hasText = text => evidence === 'reward-text' && text === '恭喜获得';
-        f.vision.ocrRect = () => evidence === 'empty' ? '暂 无 可 领 取 的 附 件' : '';
-        result(f.task.run(), evidence.startsWith('reward') ? 'success' : evidence === 'empty' ? 'skipped' : 'unconfirmed');
+        let frames = 0, diagnostics = 0;
+        f.context.sgs.debugShots = { save: () => { diagnostics++; return '/debug/mail.png'; } };
+        f.vision.find = template => evidence === 'reward-template' && template === f.task.REWARD && frames >= 3 ? { x: 1, y: 2 } : null;
+        f.vision.hasText = (text, region) => evidence === 'reward-text' && text === '恭喜获得' && frames >= 3 && region === f.task.REWARD_REGION;
+        f.vision.ocrRect = () => {
+            if (evidence !== 'empty') return '';
+            return frames >= 3 ? '暂 无 可 领 取 的 附 件' : '';
+        };
+        const frame = f.vision.frame;
+        f.vision.frame = force => { frames++; return frame(force); };
+        const r = f.task.run();
+        result(r, evidence.startsWith('reward') ? 'success' : evidence === 'empty' ? 'skipped' : 'unconfirmed');
         assert.strictEqual(f.clicks.filter(c => c[0] === 'image' && c[1] === f.task.CLAIM).length, 2);
+        assert.strictEqual(diagnostics, evidence === 'none' ? 1 : 0);
+        assert(frames >= 3, 'evidence must be polled instead of read once');
     });
 }
+test('mail: delayed reward in widened region is accepted before closing mail', () => {
+    const f = load('mail');
+    let frames = 0;
+    f.vision.find = (template, threshold, region) => template === f.task.REWARD && region === f.task.REWARD_WIDE_REGION && frames >= 2 ? { x: 1 } : null;
+    const frame = f.vision.frame;
+    f.vision.frame = force => { frames++; return frame(force); };
+    result(f.task.run(), 'success');
+});
+test('mail: unrelated OCR text remains unconfirmed and saves diagnostics', () => {
+    const f = load('mail');
+    let diagnostics = 0;
+    f.context.sgs.debugShots = { save: () => { diagnostics++; return '/debug/mail.png'; } };
+    f.vision.ocrRect = () => '华容道战报';
+    result(f.task.run(), 'unconfirmed');
+    assert.strictEqual(diagnostics, 1);
+});
 test('mail: cancellation after navigation prevents claim', () => {
     const f = load('mail');
     let ready = false;
