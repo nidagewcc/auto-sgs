@@ -14,6 +14,10 @@ sgs.tasks.xiaoqiao = {
     ENTRY_RIGHT: [2372, 0, 2772, 1280],
     ENTRY_RIGHT_TPL: "xiaoqiao/home-avatar.png",
     ENTRY_TH: 0.75,
+    // 新账号主城皮肤/缩放会让主模板分数降到 0.67；旧窄条模板在左侧带实测 0.92。
+    // 仅作为高分后备，不放宽主模板阈值，也不允许全屏匹配。
+    ENTRY_FALLBACK: "xiaoqiao/xiaoqiao_entry.png",
+    ENTRY_FALLBACK_TH: 0.9,
 
     TAB_TEXT: "日常功能",
     TAB_CHECK: "日常", // OCR 常把「功」认成「劝」，判断时用短词
@@ -26,7 +30,7 @@ sgs.tasks.xiaoqiao = {
 
     COMPLETION_REGION: [860, 1060, 1980, 1165],
     RESULT_TITLE_REGION: [850, 120, 1920, 285],
-    RESULT_TITLES: ["军团一键援助", "执行结果", "日常结果"],
+    RESULT_TITLES: ["军团一键援助", "挑战竞技场", "执行结果", "日常结果"],
     REWARD_REGION: [950, 70, 1850, 260],
     BLANK_TAP: [400, 640],
     RESULT_CLOSE: [1940, 88],
@@ -43,13 +47,15 @@ sgs.tasks.xiaoqiao = {
         if (!img) return null;
         // 只认左右两条侧带，不做全屏兜底
         var cands = [
-            { tpl: this.ENTRY, rect: this.ENTRY_LEFT },
-            { tpl: this.ENTRY_RIGHT_TPL, rect: this.ENTRY_RIGHT }
+            { tpl: this.ENTRY, rect: this.ENTRY_LEFT, th: this.ENTRY_TH },
+            { tpl: this.ENTRY_RIGHT_TPL, rect: this.ENTRY_RIGHT, th: this.ENTRY_TH },
+            { tpl: this.ENTRY_FALLBACK, rect: this.ENTRY_LEFT, th: this.ENTRY_FALLBACK_TH },
+            { tpl: this.ENTRY_FALLBACK, rect: this.ENTRY_RIGHT, th: this.ENTRY_FALLBACK_TH }
         ];
         for (var i = 0; i < cands.length; i++) {
-            var p = v.find(cands[i].tpl, this.ENTRY_TH, cands[i].rect, img);
+            var p = v.find(cands[i].tpl, cands[i].th, cands[i].rect, img);
             if (p) {
-                sgs.log.i("头像命中 " + cands[i].tpl
+                sgs.log.i("头像命中 " + cands[i].tpl + " 阈值 " + cands[i].th
                     + (cands[i].rect ? " 区域" + JSON.stringify(cands[i].rect) : " 全屏")
                     + " 中心 " + p.x + "," + p.y);
                 return p;

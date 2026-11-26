@@ -143,27 +143,54 @@ test('xiaoqiao: direct completion green bar succeeds', () => {
     result(f.task.run(), 'success');
     assert.strictEqual(pointCount(f, f.task.RESULT_CLOSE), 1);
 });
-test('xiaoqiao: completion green bar with guild result dialog closes dialog before home', () => {
-    const f = xiaoqiao('done', false);
-    let closed = false;
-    f.vision.hasText = (text, region) => {
-        if (text === '军团一键援助' && region === f.task.RESULT_TITLE_REGION) return !closed;
-        return false;
-    };
-    const click = f.vision.clickPointAt;
-    f.vision.clickPointAt = (x, y) => {
-        click(x, y);
-        if (x === f.task.RESULT_CLOSE[0] && y === f.task.RESULT_CLOSE[1]) closed = true;
-    };
-    const r = f.task.run();
-    result(r, 'success');
-    assert.strictEqual(closed, true);
-    assert.strictEqual(pointCount(f, f.task.RESULT_CLOSE), 1);
-});
+for (const dialogTitle of ['军团一键援助', '挑战竞技场']) {
+    test('xiaoqiao: completion green bar with ' + dialogTitle + ' closes dialog before home', () => {
+        const f = xiaoqiao('done', false);
+        let closed = false;
+        f.vision.hasText = (text, region) => {
+            if (text === dialogTitle && region === f.task.RESULT_TITLE_REGION) return !closed;
+            return false;
+        };
+        const click = f.vision.clickPointAt;
+        f.vision.clickPointAt = (x, y) => {
+            click(x, y);
+            if (x === f.task.RESULT_CLOSE[0] && y === f.task.RESULT_CLOSE[1]) closed = true;
+        };
+        const r = f.task.run();
+        result(r, 'success');
+        assert.strictEqual(closed, true);
+        assert.strictEqual(pointCount(f, f.task.RESULT_CLOSE), 1);
+    });
+}
 test('xiaoqiao: result dialog that remains open fails instead of false success', () => {
     const f = xiaoqiao('done', false);
     f.vision.hasText = (text, region) => text === '军团一键援助' && region === f.task.RESULT_TITLE_REGION;
     assert.throws(() => f.task.run(), /小乔结果弹窗未能关闭/);
+});
+test('xiaoqiao: high-score fallback template finds side entry without full-screen fallback', () => {
+    const f = load('xiaoqiao');
+    const queries = [];
+    f.vision.find = (template, threshold, region) => {
+        queries.push({ template, threshold, region });
+        return template === f.task.ENTRY_FALLBACK && threshold === f.task.ENTRY_FALLBACK_TH
+            && JSON.stringify(region) === JSON.stringify(f.task.ENTRY_LEFT) ? { x: 47, y: 485 } : null;
+    };
+    f.task._waitPanel = () => true;
+    f.task._openDailyTab = () => ({ x: 1901, y: 941 });
+    f.context.images.findColor = () => ({ x: 1, y: 1 });
+    f.task._closeResult = () => true;
+    f.task.run({ allowReset: false });
+    assert(queries.some(q => q.template === f.task.ENTRY && q.threshold === f.task.ENTRY_TH));
+    assert(queries.every(q => JSON.stringify(q.region) === JSON.stringify(f.task.ENTRY_LEFT)
+        || JSON.stringify(q.region) === JSON.stringify(f.task.ENTRY_RIGHT)));
+    assert.deepStrictEqual(f.clicks[0], ['point', 47, 485]);
+});
+test('xiaoqiao: low-score fallback cannot authorize a click', () => {
+    const f = load('xiaoqiao');
+    f.vision.find = (template, threshold) => template === f.task.ENTRY_FALLBACK && threshold < f.task.ENTRY_FALLBACK_TH
+        ? { x: 10, y: 20 } : null;
+    assert.throws(() => f.task.run());
+    assert.deepStrictEqual(f.clicks, []);
 });
 test('xiaoqiao: cancellation after locating 开启 prevents spending click', () => {
     const f = xiaoqiao('home', false);
