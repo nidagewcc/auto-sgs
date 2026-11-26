@@ -364,6 +364,7 @@ MODS = [
     "src/tasks/mail.js",
     "src/tasks/xiaoqiao.js",
     "src/tasks/junqing.js",
+    "src/tasks/zhuxian.js",
     "src/ui.js",
 ]
 

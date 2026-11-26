@@ -25,6 +25,7 @@ sgs.ui = {
         { id: "mail", icon: "邮", title: "邮件全部领取", desc: "领完并关闭弹窗回主城", color: "FF2F7A57" },
         { id: "xiaoqiao", icon: "乔", title: "小乔 · 一键日常", desc: "开启日常并等完成（耗元宝）", color: "FF6C4FA8" },
         { id: "junqing", icon: "军", title: "紧急军情 · 一键挑战", desc: "三关一键挑战（耗体力约 30）", color: "FFA34A2A" },
+        { id: "zhuxian", icon: "副", title: "主线副本扫荡", desc: "最新回扫荡 5 次（0 次时花 20 元宝重置）", color: "FF8A5A2B" },
         { id: "daily", icon: "全", title: "一键日常", desc: "邮件 → 小乔，依次跑完", color: "FFB8862B" },
         { id: "shot", icon: "图", title: "截屏回传", desc: "把当前画面发到电脑", color: "FF46566B" }
     ],
@@ -263,7 +264,7 @@ sgs.ui = {
             icon.setLayoutParams(ilp);
             cell.addView(icon);
 
-            var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "junqing" ? "军情" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
+            var lbl = this._tv(t.id === "playerinfo" ? "信息" : t.id === "mail" ? "邮件" : t.id === "xiaoqiao" ? "小乔" : t.id === "junqing" ? "军情" : t.id === "zhuxian" ? "副本" : t.id === "daily" ? "日常" : "截图", 9, this.C.sub, false);
             lbl.setGravity(android.view.Gravity.CENTER);
             var llp = new android.widget.LinearLayout.LayoutParams(-1, -2);
             llp.setMargins(0, this.px(5), 0, 0);
@@ -584,25 +585,35 @@ sgs.ui = {
     },
 
     stopAll: function () {
+        var self = this;
         var th = this._thread;
-        var alive = false;
-        try { if (th) th.interrupt(); } catch (e) { }
-        // token 置空：让旧任务的 finally 认不出自己，不会把「已手动停止」之后的状态再改一遍
+        // 旧任务不能再清理状态；保留线程引用，直到它实际退出才解除互斥。
         this._token = null;
-        // interrupt 只是打了个标记，线程还在 sleep 里，醒来前随时可能再点一下屏幕。
-        // 必须等它真的退出再放开互斥，否则新任务进来就是两个线程抢同一块屏
-        if (th) {
-            for (var w = 0; w < 40; w++) {
-                try { alive = th.isAlive(); } catch (e2) { alive = false; }
-                if (!alive) break;
-                sleep(100);
-            }
-        }
         this._t0 = 0;
-        this._thread = null;
-        this._lastResult = "已手动停止";
-        this._paintBall(false);
-        toast(alive ? "已请求停止，线程未在 4s 内退出" : "已停止");
+        if (!th) {
+            this._lastResult = "已手动停止";
+            this._paintBall(false);
+            toast("已停止");
+            return;
+        }
+        this._lastResult = "正在停止";
+        try { th.interrupt(); } catch (e) { sgs.log.e("请求停止失败 " + e); }
+        toast("已请求停止，等待任务退出");
+        // 停止按钮在 Android 主线程执行，不能在这里 sleep 等待，更不能超时后放行。
+        threads.start(function () {
+            try {
+                while (th.isAlive()) sleep(100);
+            } catch (e2) {
+                sgs.log.e("等待任务退出失败 " + e2);
+                return; // 无法确认退出时保留线程引用，不宣告已经停止
+            }
+            // 新任务可能在旧线程退出后已经启动，不能清除新任务的状态。
+            if (self._thread !== th) return;
+            self._thread = null;
+            self._lastResult = "已手动停止";
+            self._paintBall(false);
+            self._post(function () { self._refresh(); });
+        });
     },
 
     refreshLog: function () {

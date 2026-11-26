@@ -33,7 +33,11 @@ sgs.tasks.junqing = {
 
     /** 面板判据：标题文字。一次 OCR 判完，别按关键词拆成多次 hasText */
     _panelOpen: function (img) {
-        var t = sgs.vision.ocrRect(this.TITLE_REGION, img).replace(/\s+/g, "");
+        var v = sgs.vision;
+        // 点击入口、领奖或关闭后必须读取新画面；ocrRect 默认会复用缓存。
+        img = img || v.frame(true);
+        if (!img) return false;
+        var t = v.ocrRect(this.TITLE_REGION, img).replace(/\s+/g, "");
         return t.indexOf("敌军") >= 0 || t.indexOf("十万火急") >= 0 || t.indexOf("讨战") >= 0;
     },
 
