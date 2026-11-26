@@ -139,6 +139,8 @@ try {
     sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
 } catch (__ec) { }
 
+try { sgs.debugShots.init(); } catch (e1) { sgs.log.w("调试截图目录初始化失败 " + e1); }
+
 sgs.log.i("step2 截图权限（强制横屏：进程内首次申请就决定画布方向）");
 try {
     sgs.vision._landForce = true;
@@ -228,9 +230,8 @@ threads.start(function () {
                         sleep(2000);
                         var __im = sgs.vision.frame(true);
                         if (__im) {
-                            var __p = "/sdcard/Download/autosgs-logs/shot_tap_" + __tx + "x" + __ty + ".png";
-                            images.save(__im, __p);
-                            sgs.log.i("[tap] 截图 " + __p);
+                            var __p = sgs.debugShots.save(__im, "tap_" + __tx + "x" + __ty);
+                            if (__p) sgs.log.i("[tap] 截图 " + __p);
                         }
                     } catch (__es) { sgs.log.w("[tap] 异常 " + __es); }
                     continue;
@@ -249,9 +250,8 @@ threads.start(function () {
                         var __nm = __tid2.substring(5) || "now";
                         var __im2 = sgs.vision.frame(true);
                         if (__im2) {
-                            var __p2 = "/sdcard/Download/autosgs-logs/shot_" + __nm + ".png";
-                            images.save(__im2, __p2);
-                            sgs.log.i("[shot] " + __p2);
+                            var __p2 = sgs.debugShots.save(__im2, __nm);
+                            if (__p2) sgs.log.i("[shot] " + __p2);
                         }
                     } catch (__es2) { sgs.log.w("[shot] 失败 " + __es2); }
                     continue;
@@ -358,6 +358,7 @@ threads.start(function () {
 
 MODS = [
     "src/config.js",
+    "src/debugshots.js",
     "src/vision.js",
     "src/game.js",
     "src/tasks/playerinfo.js",

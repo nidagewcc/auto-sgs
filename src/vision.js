@@ -167,8 +167,8 @@ sgs.vision = {
             }
             if (!this._dbgSaved) {
                 this._dbgSaved = true;
-                try { images.save(img, sgs.LOG_DIR + "_raw.jpg"); } catch (e1) { sgs.log.e("[vision] save raw 失败 " + e1); }
-                try { images.save(rs, sgs.LOG_DIR + "_norm.jpg"); } catch (e2) { sgs.log.e("[vision] save norm 失败 " + e2); }
+                sgs.debugShots.save(img, "raw");
+                sgs.debugShots.save(rs, "norm");
             }
             return rs;
         } catch (e) {
