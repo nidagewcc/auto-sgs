@@ -9,7 +9,7 @@ sgs.ui = {
     ballView: null, ballLp: null,
     _views: [], _disposed: false,
     dockView: null,
-    panelView: null, _statusTv: null, _logTv: null,
+    panelView: null, dailySettingsView: null, _statusTv: null, _logTv: null,
 
     _thread: null, _t0: 0, _tick: null, _lastResult: "", _token: null,
 
@@ -119,7 +119,7 @@ sgs.ui = {
                     var lp = view.getLayoutParams();
                     if (!lp || lp.type != android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) continue;
                     var tag = String(view.getTag());
-                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel";
+                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel" || tag === "auto-sgs:daily-settings";
                     // 兼容旧版无标签的球：同时匹配类型、文字、尺寸、背景形状及颜色。
                     if (!owned && view instanceof android.widget.TextView && String(view.getText()) === "三"
                         && lp.width === self.px(54) && lp.height === self.px(54)) {
@@ -148,7 +148,7 @@ sgs.ui = {
         this._disposed = true;
         this._stopTick();
         this.ballView = null; this.ballLp = null;
-        this.dockView = null; this.panelView = null;
+        this.dockView = null; this.panelView = null; this.dailySettingsView = null;
         this._statusTv = null; this._logTv = null;
         var self = this;
         this._onMainSync(function () {
@@ -451,6 +451,15 @@ sgs.ui = {
         this._margins(line, 0, 8, 0, 2);
         root.addView(line);
 
+        if (sgs.dailyUI) {
+            var settings = this._tv("日常设置 · 勾选与排序 ›", 12, this.C.gold, true);
+            settings.setPadding(0, this.px(10), 0, this.px(10));
+            settings.setClickable(true);
+            settings.setOnClickListener(new android.view.View.OnClickListener({
+                onClick: function () { sgs.dailyUI.show(); }
+            }));
+            root.addView(settings);
+        }
         // 任务行
         for (var i = 0; i < this.TASKS.length; i++) root.addView(this._row(this.TASKS[i]));
 
@@ -484,9 +493,14 @@ sgs.ui = {
         }));
         root.addView(stop);
 
-        var lp = this._lp(W, -2, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
-        this.panelView = root;
-        this._attachWindow(root, lp, "panel", "panelView");
+        // 横屏空间有限，完整面板可滚动，避免新增设置把底部按钮挤出屏幕。
+        var scroll = new android.widget.ScrollView(this._ctx);
+        scroll.setFillViewport(true);
+        scroll.addView(root);
+        var height = Math.max(1, Math.min(this._ctx.getResources().getDisplayMetrics().heightPixels - this.px(32), this.px(600)));
+        var lp = this._lp(W, height, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
+        this.panelView = scroll;
+        this._attachWindow(scroll, lp, "panel", "panelView");
         this._startTick();
         sgs.log.i("完整面板已展开");
     },
@@ -524,7 +538,13 @@ sgs.ui = {
         blp.setMargins(this.px(9), 0, this.px(5), 0);
         box.setLayoutParams(blp);
         box.addView(this._tv(t.title, 13, this.C.text, true));
-        box.addView(this._tv(t.desc, 9, this.C.sub, false));
+        var description = t.desc;
+        if (t.id === "daily" && sgs.daily) {
+            try { description = sgs.daily.planLabel(); }
+            catch (e) { description = "配置需检查，请打开日常设置"; }
+        }
+        box.addView(this._tv(description, 9, this.C.sub, false));
+        if (t.id === "daily" && sgs.daily) box.addView(this._tv(sgs.daily.lastSummary(), 9, this.C.sub, false));
         row.addView(box);
 
         var arrow = this._tv("›", 15, this.C.sub, false);
@@ -591,6 +611,8 @@ sgs.ui = {
     runTask: function (id, label) {
         var self = this;
         if (this.isBusy()) { toast("任务执行中"); return; }
+        this.hideDock(); this.hidePanel();
+        if (sgs.dailyUI) sgs.dailyUI.hide();
         if (id === "daily") { this.runDaily(label); return; }
         this._t0 = new Date().getTime();
         this._paintBall(true);
@@ -607,82 +629,76 @@ sgs.ui = {
                     self._lastResult = "截图 " + Math.round((new Date().getTime() - t0) / 1000) + "s ✓";
                     return;
                 }
-                if (!sgs.game.ensure(120000)) throw new Error("未进入主城");
+                if (!sgs.dailyRecovery.ensureHome(null, function () { return self._token !== token; }, false)) {
+                    throw new Error("未确认主城，请先手动登录；不会自动登录或切号");
+                }
                 var task = sgs.tasks[id];
                 if (!task) throw new Error("任务不存在 " + id);
-                task.run();
+                var result = task.run({ checkCancelled: function () {
+                    if (self._token !== token) { var e = new Error("任务已停止"); e.cancelled = true; throw e; }
+                } });
+                var state = sgs.daily._result(id, result);
+                var names = { success: "成功", skipped: "跳过", unconfirmed: "待确认", failed: "失败" };
                 var cost = Math.round((new Date().getTime() - t0) / 1000);
-                sgs.log.i("=== " + label + " 完成 " + cost + "s ===");
-                toast(label + " 完成 " + cost + "s");
-                self._lastResult = label + " " + cost + "s ✓";
+                sgs.log.i("=== " + label + " " + names[state.status] + " " + cost + "s：" + state.message + " ===");
+                if (self._token === token) {
+                    toast(label + " " + names[state.status] + " " + cost + "s");
+                    self._lastResult = label + " " + names[state.status] + " " + cost + "s";
+                }
             } catch (e) {
                 sgs.log.e("任务异常: " + e + " || stack=" + (e && e.stack ? e.stack : "-"));
-                toast("异常: " + e);
-                self._lastResult = "上次失败 ✗";
+                if (self._token === token) { toast("异常: " + e); self._lastResult = "上次失败 ✗"; }
             } finally {
-                // 只有自己仍是当前任务才清状态：旧任务收尾不能把新任务的 _thread/_t0 抹掉
+                try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
+                try { sgs.pushLog(); } catch (e3) { }
+                // 回传也属于本线程；完成后才释放互斥。
                 if (self._token === token) {
                     self._t0 = 0;
                     self._thread = null;
                     self._paintBall(false);
                 }
-                try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
-                try { sgs.pushLog(); } catch (e3) { }
                 self._post(function () { self._refresh(); });
             }
         });
     },
 
-    /** 一键日常：邮件 → 小乔，各自独立 catch，一个失败不阻塞另一个 */
-    runDaily: function (label) {
+    /** 日常顺序、选择、结果和恢复统一交给执行器。 */
+    runDaily: function (label, planOverride) {
         var self = this;
         if (this.isBusy()) { toast("任务执行中"); return; }
+        this.hideDock(); this.hidePanel();
+        if (sgs.dailyUI) sgs.dailyUI.hide();
         this._t0 = new Date().getTime();
         this._paintBall(true);
         var token = {};
         this._token = token;
         this._thread = threads.start(function () {
-            var t0 = new Date().getTime();
-            var done = [], fail = [];
             try {
-                sgs.log.i("=== 开始 一键日常 ===");
-                if (!sgs.game.ensure(120000)) throw new Error("未进入主城");
-
-                var steps = [
-                    { id: "mail", name: "邮件" },
-                    { id: "xiaoqiao", name: "小乔日常" }
-                ];
-                for (var i = 0; i < steps.length; i++) {
-                    var st = steps[i];
-                    try {
-                        sgs.log.i("--- 日常 " + (i + 1) + "/2：" + st.name + " ---");
-                        sgs.tasks[st.id].run();
-                        done.push(st.name);
-                    } catch (e) {
-                        sgs.log.e(st.name + " 失败: " + e);
-                        fail.push(st.name);
-                        try { sgs.pushShot(); } catch (e2) { }
+                sgs.log.i("=== 开始 " + (label || "一键日常") + "：" + sgs.daily.planLabel(planOverride) + " ===");
+                var report = sgs.daily.run({
+                    plan: planOverride,
+                    isCancelled: function () { return self._token !== token; },
+                    onProgress: function (index, total, item) {
+                        if (self._token !== token) return;
+                        self._lastResult = "日常 " + index + "/" + total + " · " + item.name;
+                        self._post(function () { self._refresh(); });
                     }
-                }
-
-                var cost = Math.round((new Date().getTime() - t0) / 1000);
-                var msg = "完成 " + done.length + "/2";
-                if (fail.length) msg += "，失败 " + fail.join("/");
-                sgs.log.i("=== 一键日常 " + msg + " " + cost + "s ===");
-                toast("一键日常 " + msg + " " + cost + "s");
-                self._lastResult = "日常 " + msg + " " + cost + "s";
+                });
+                self._dailyReport = report;
+                var msg = sgs.daily.formatReport(report);
+                sgs.log.i("=== 一键日常 " + msg + (report.error ? "；" + report.error : "") + " ===");
+                if (self._token === token) { toast(msg); self._lastResult = "日常 " + msg; }
             } catch (e) {
                 sgs.log.e("一键日常异常: " + e);
-                toast("异常: " + e);
-                self._lastResult = "上次失败 ✗";
+                if (self._token === token) { toast("日常未完成：" + e); self._lastResult = "日常失败 · 请查看日志"; }
             } finally {
+                try { if (sgs.pushShot) sgs.pushShot(); } catch (e4) { }
+                try { sgs.pushLog(); } catch (e5) { }
                 if (self._token === token) {
                     self._t0 = 0;
                     self._thread = null;
                     self._paintBall(false);
                 }
-                try { sgs.pushShot(); } catch (e4) { }
-                try { sgs.pushLog(); } catch (e5) { }
                 self._post(function () { self._refresh(); });
             }
         });

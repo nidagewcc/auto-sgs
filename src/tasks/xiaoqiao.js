@@ -132,7 +132,7 @@ sgs.tasks.xiaoqiao = {
     },
 
     _closeResult: function () {
-        var v = sgs.vision;
+        var v = sgs.vision, completionSeen = false;
         sleep(800);
 
         // 1) 奖励弹窗：点空白优先，右上 X 兜底
@@ -154,6 +154,7 @@ sgs.tasks.xiaoqiao = {
 
         // 2) 旧版「执行完成」结果窗
         for (var c = 1; c <= 3 && this._done(); c++) {
+            completionSeen = true;
             v.clickPointAt(this.RESULT_CLOSE[0], this.RESULT_CLOSE[1]);
             var d3 = new Date().getTime();
             while (new Date().getTime() - d3 < sgs.TIMEOUT.ui && this._done()) sleep(700);
@@ -163,7 +164,7 @@ sgs.tasks.xiaoqiao = {
         for (var p = 1; p <= 3; p++) {
             if (!this._panelOpen() && sgs.vision.isHome()) {
                 sgs.log.i("已确认回到主城");
-                return;
+                return completionSeen;
             }
             if (this._panelOpen()) {
                 v.clickPointAt(this.PANEL_CLOSE[0], this.PANEL_CLOSE[1]);
@@ -174,28 +175,22 @@ sgs.tasks.xiaoqiao = {
                 sleep(700);
             }
         }
-        // 4) 陌生子界面兜底：误触进拍卖 / 图鉴 / 军团等页面时，点左上角返回
-        //    实测主城 2772x1280 下点 (70,70) 能从「全服拍卖」退回主城
-        //    每轮必须重新取帧：isHome() 不带参数会读缓存，第一次已回主城也看不出来，
-        //    会继续白点两次再按旧帧抛错
-        for (var q = 1; q <= 3; q++) {
-            if (sgs.vision.isHome(v.frame(true))) break;
-            sgs.log.w("未回主城，点左上角返回（第 " + q + " 轮）");
-            v.clickPointAt(70, 70);
-            sleep(2500);
-        }
+        // 未知页面不再盲点左上角；由日常恢复器识别已知页面，无法确认就停止。
         if (!sgs.vision.isHome(v.frame(true))) throw new Error("面板未能关闭并回到主城");
         sgs.log.i("已确认回到主城");
+        return completionSeen;
     },
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
-
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        check();
         this._openPanel();
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
 
-        // 点识别到的按钮本身，不用写死的坐标：图匹上了就说明位置在这，点空的风险为零
+        // 使用实际识别坐标；点击前再次检查停止请求。
+        check();
         v.clickRect(btn);
         sgs.log.i("已点击「开启」(" + btn.x + "," + btn.y + ")，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
@@ -203,20 +198,23 @@ sgs.tasks.xiaoqiao = {
         var deadline = new Date().getTime() + this.RUN_TIMEOUT;
         var againConfirmed = false;
         while (new Date().getTime() < deadline) {
+            check();
             if (this._findReward()) {
-                sgs.log.i("识别到完成弹窗");
-                this._closeResult();
-                return;
+                sgs.log.i("识别到奖励弹窗，整套日常状态待确认");
+                var completionSeen = this._closeResult();
+                return { status: completionSeen ? "success" : "unconfirmed",
+                    message: completionSeen ? "已确认执行完成并返回主城" : "已关闭奖励弹窗，但整套日常完成状态未确认" };
             }
             if (this._done()) {
                 sgs.log.i("识别到「执行完成」绿条");
                 this._closeResult();
-                return;
+                return { status: "success", message: "已识别执行完成标志并返回主城" };
             }
             if (!againConfirmed && v.hasText("再次执行", this.AGAIN_REGION)) {
                 if (!v.waitText("确认", this.CONFIRM_REGION, sgs.TIMEOUT.page)) {
                     throw new Error("「再次执行」弹窗未识别到确认");
                 }
+                check();
                 v.tapRect(this.CONFIRM_REGION);
                 againConfirmed = true;
                 deadline = new Date().getTime() + this.RUN_TIMEOUT;

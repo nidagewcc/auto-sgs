@@ -19,7 +19,8 @@ function junqingEnv() {
         frame(force) { assert.equal(force, true); captures++; return { screen }; },
         ocrRect(rect, img) { return img.screen === 'panel' ? '敌军入侵，十万火急' : ''; },
         tapImage() { screen = 'panel'; return true; },
-        clickPointAt() { screen = 'home'; },
+        find() { return { x: 2550, y: 1234 }; },
+        clickPointAt(x, y) { if (x === 2410 && y === 174) screen = 'home'; },
         waitImage() { return screen === 'home' ? { x: 1, y: 1 } : null; }
     };
     const ctx = { sgs: { vision: v, log: logs, TIMEOUT: { page: 8000, ui: 3000 }, ANCHOR: {} }, sleep() {} };

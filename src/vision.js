@@ -41,8 +41,8 @@ sgs.vision = {
                 for (var i = 0; i < 60; i++) {
                     sleep(300);
                     var b = null;
-                    try { b = text("共享屏幕").findOnce(); } catch (e0) { b = null; }
-                    if (!b) { try { b = textContains("共享屏幕").findOnce(); } catch (e1) { b = null; } }
+                    try { b = text("共享屏幕").packageName("com.android.systemui").findOnce(); } catch (e0) { b = null; }
+                    if (!b) { try { b = textContains("共享屏幕").packageName("com.android.systemui").findOnce(); } catch (e1) { b = null; } }
                     if (b) {
                         var done = false;
                         try { done = b.click(); } catch (e2) { done = false; }

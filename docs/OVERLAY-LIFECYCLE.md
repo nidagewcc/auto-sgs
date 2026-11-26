@@ -11,7 +11,7 @@
 ## 修复
 
 - `showBall()` 将创建操作串行投递到 Android 主线程；已有窗口或待创建窗口时复用，重复显示不会增加窗口。
-- 所有窗口添加归属标签和窗口标题：`auto-sgs:ball`、`auto-sgs:dock`、`auto-sgs:panel`，并登记到本引擎的窗口列表。
+- 所有窗口添加归属标签和窗口标题：`auto-sgs:ball`、`auto-sgs:dock`、`auto-sgs:panel`，并登记到本引擎的窗口列表。新增日常设置面板使用 `auto-sgs:daily-settings`，沿用同一登记、退出清理和遗留回收机制。
 - 添加前再次检查当前引用和退出状态，避免 hide/dispose 后排队回调补出新窗口。添加失败后可重试。
 - 隐藏时移除窗口；退出通过 `events.on("exit")` 调用 `dispose()`，在主线程同步清理球、圆盘、面板和刷新计时器。两个重载入口在启动新引擎前同样主动清理。
 - 清理检查 Java View 身份时兼容不同 Rhino wrapper 对应同一 Java 对象的情况，避免误删本引擎正在使用的窗口。

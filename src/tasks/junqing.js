@@ -106,17 +106,21 @@ sgs.tasks.junqing = {
         return false;
     },
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
-
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        check();
         if (!this._openPanel()) {
-            sgs.log.i("紧急军情今日无可挑战，任务结束");
-            return;
+            sgs.log.i("未出现可用军情入口，未发起挑战");
+            return { status: "skipped", message: "未出现可用军情入口，未发起挑战" };
         }
 
-        if (!v.tapImage(this.ONECLICK, 0.8, this.ONECLICK_REGION)) {
-            throw new Error("未识别到「一键挑战」按钮，未发起挑战");
-        }
+        check();
+        var challenge = v.find(this.ONECLICK, 0.8, this.ONECLICK_REGION, v.frame(true));
+        if (!challenge) throw new Error("未识别到「一键挑战」按钮，未发起挑战");
+        // 找图可能耗时，停止请求到来后不能继续消耗体力。
+        check();
+        v.clickPointAt(challenge.x, challenge.y);
         sgs.log.i("点击「一键挑战」");
 
         var gotReward = this._dismissReward();
@@ -144,5 +148,7 @@ sgs.tasks.junqing = {
         var home = v.waitImage(sgs.ANCHOR.image, sgs.TIMEOUT.ui, sgs.ANCHOR.region, 0.72);
         if (!home) throw new Error("关闭面板后未确认回到主城");
         sgs.log.i("紧急军情任务完成");
+        return { status: done === this.DONE_REGIONS.length ? "success" : "unconfirmed",
+            message: "已识别击杀关卡 " + done + "/" + this.DONE_REGIONS.length + "，已返回主城" };
     }
 };

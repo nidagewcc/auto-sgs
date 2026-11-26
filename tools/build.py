@@ -201,6 +201,14 @@ threads.start(function () {
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
                 }
+                if (__tid2 === "daily:readonly") {
+                    sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
+                    continue;
+                }
+                if (__tid2 === "daily:settings") {
+                    sgs.dailyUI.show();
+                    continue;
+                }
                 // 单步点击：tap:x,y —— 点完自动存档一帧，方便逐步确认界面（换号这类一次性流程用）
                 if (__tid2.indexOf("tap:") === 0) {
                     var __xy = __tid2.substring(4).split(",");
@@ -257,7 +265,11 @@ threads.start(function () {
         var cmd = String(cr.body.string()).replace(/[ \\r\\n\\t]+/g, "");
         if (cmd && cmd != "none") {
             sgs.log.i("[cmd] " + cmd);
-            if (cmd.indexOf("run:") == 0) {
+            if (cmd === "daily:readonly") {
+                sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
+            } else if (cmd === "daily:settings") {
+                sgs.dailyUI.show();
+            } else if (cmd.indexOf("run:") == 0) {
                 var tid = cmd.substring(4);
                 // 原来这里先清 _t0 再启动，等于主动绕过互斥，会让两个任务并行抢点击
                 if (sgs.ui.isBusy()) sgs.log.w("[cmd] 任务运行中，拒绝 " + tid);
@@ -329,7 +341,10 @@ MODS = [
     "src/tasks/xiaoqiao.js",
     "src/tasks/junqing.js",
     "src/tasks/zhuxian.js",
+    "src/daily-recovery.js",
+    "src/daily.js",
     "src/ui.js",
+    "src/daily-ui.js",
 ]
 
 

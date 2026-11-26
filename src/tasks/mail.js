@@ -16,8 +16,10 @@ sgs.tasks.mail = {
     REWARD_REGION: [900, 80, 1900, 330],
     DISMISS: [1386, 1180],
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        check();
 
         // 1) 打开邮件弹窗
         var opened = false;
@@ -38,7 +40,10 @@ sgs.tasks.mail = {
         //    无可领邮件时按钮不消失、点了没反应，所以不拿按钮消失当判据。
         //    但第一轮必须真的识别到按钮：识别不到说明模板失配或弹窗没开成，
         //    继续静默走完会给出一个假的「已领取」结论，宁可直接报错。
+        var rewardSeen = false, emptySeen = false;
         for (var ci = 1; ci <= 2; ci++) {
+            check();
+            v.frame(true);
             if (!v.tapImage(this.CLAIM, 0.8, this.CLAIM_REGION)) {
                 if (ci === 1) throw new Error("未识别到「全部领取」按钮，领取结果未知");
                 sgs.log.w("第 2 轮未检测到全部领取按钮，停止重试");
@@ -46,6 +51,12 @@ sgs.tasks.mail = {
             }
             sgs.log.i("点击「全部领取」（第 " + ci + " 轮）");
             sleep(2000);
+            var claimImg = v.frame(true);
+            if (claimImg) {
+                if (v.find(this.REWARD, 0.8, this.REWARD_REGION, claimImg) || v.hasText("恭喜获得", this.REWARD_REGION, claimImg)) rewardSeen = true;
+                var body = v.ocrRect([600, 300, 2200, 950], claimImg).replace(/\s+/g, "");
+                if (/暂无邮件|没有可领取的附件|暂无可领取的附件|没有可领取的邮件/.test(body)) emptySeen = true;
+            }
             v.clickPointAt(this.DISMISS[0], this.DISMISS[1]);
             sleep(600);
         }
@@ -73,5 +84,8 @@ sgs.tasks.mail = {
         var home = v.waitImage(sgs.ANCHOR.image, sgs.TIMEOUT.ui, sgs.ANCHOR.region, 0.72);
         if (!home) throw new Error("关闭弹窗后未确认回到主城");
         sgs.log.i("邮件任务完成");
+        if (rewardSeen) return { status: "success", message: "已识别领取奖励并返回主城" };
+        if (emptySeen) return { status: "skipped", message: "已识别无可领取邮件，返回主城" };
+        return { status: "unconfirmed", message: "已点击领取并返回主城，未确认奖励或空状态" };
     }
 };

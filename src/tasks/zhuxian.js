@@ -85,11 +85,15 @@ sgs.tasks.zhuxian = {
         return "timeout";
     },
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var allowReset = options && typeof options.allowReset === "boolean" ? options.allowReset : this.allowReset;
         var summary = { reset: false, attemptsBefore: -1, swept: 0 };
+        check();
 
         // 1) 主城 → 征战 → 副本地图
+        check();
         v.clickPointAt(this.ENTER_ZHENGZHAN[0], this.ENTER_ZHENGZHAN[1]);
         sgs.log.i("[zhuxian] 点击征战入口");
         var t0 = new Date().getTime();
@@ -105,6 +109,7 @@ sgs.tasks.zhuxian = {
         sgs.log.i("[zhuxian] 已进入主线副本地图");
 
         // 2) 点最新回建筑 → 回详情页（左下出现「排行榜」，地图页没有此入口）
+        check();
         v.clickPointAt(this.STAGE_BUILDING[0], this.STAGE_BUILDING[1]);
         sgs.log.i("[zhuxian] 点击最新回建筑");
         t0 = new Date().getTime();
@@ -126,6 +131,7 @@ sgs.tasks.zhuxian = {
         sgs.log.i("[zhuxian] 已进入回详情页");
 
         // 3) 点 BOSS 角色本体 → 战斗面板
+        check();
         v.clickPointAt(this.BOSS_BODY[0], this.BOSS_BODY[1]);
         sgs.log.i("[zhuxian] 点击 BOSS 角色本体");
         if (!this._waitPanel(8)) throw new Error("点击 BOSS 后未出现战斗面板");
@@ -138,8 +144,9 @@ sgs.tasks.zhuxian = {
 
         // 5) 次数为 0：按开关决定是否重置
         if (attempts === 0) {
-            if (!this.allowReset) throw new Error("今日挑战次数已用完（0/5），且未允许元宝重置");
+            if (!allowReset) return { status: "skipped", message: "挑战次数为 0，日常未允许元宝重置", reset: false, attemptsBefore: 0, swept: 0 };
             sgs.log.i("[zhuxian] 次数为 0，点击重置（20 元宝）");
+            check();
             v.clickPointAt(this.SWEEP_BTN[0], this.SWEEP_BTN[1]);
             t0 = new Date().getTime();
             var dialog = false;
@@ -148,6 +155,7 @@ sgs.tasks.zhuxian = {
                 sleep(600);
             }
             if (!dialog) throw new Error("未出现重置确认弹窗，放弃消费");
+            check();
             v.clickPointAt(this.RESET_CONFIRM[0], this.RESET_CONFIRM[1]);
             sgs.log.i("[zhuxian] 已确认重置");
             if (!this._waitPanel(8)) throw new Error("重置后面板未恢复");
@@ -161,6 +169,7 @@ sgs.tasks.zhuxian = {
         if (!v.hasText("扫荡", this.SWEEP_REGION)) {
             throw new Error("未识别到扫荡按钮（可能关卡未三星或界面异常），不做盲点");
         }
+        check();
         v.clickPointAt(this.SWEEP_BTN[0], this.SWEEP_BTN[1]);
         sgs.log.i("[zhuxian] 已点击扫荡（" + attempts + " 次，预计耗体力 " + (attempts * 5) + "）");
 
@@ -169,13 +178,17 @@ sgs.tasks.zhuxian = {
         if (r === "no_stamina") throw new Error("体力不足，扫荡被拒绝");
         if (r === "timeout") throw new Error("未出现扫荡战报，扫荡结果未知");
         summary.swept = attempts;
-        if (v.hasText("总计获得", this.REPORT_SUM_REGION)) {
+        var totalSeen = v.hasText("总计获得", this.REPORT_SUM_REGION);
+        summary.status = totalSeen ? "success" : "unconfirmed";
+        summary.message = totalSeen ? "已确认扫荡战报和总计获得" : "已见扫荡战报，但总计获得未确认";
+        if (totalSeen) {
             sgs.log.i("[zhuxian] 战报确认：扫荡战报 + 总计获得，共扫荡 " + attempts + " 次");
         } else {
             sgs.log.w("[zhuxian] 已见扫荡战报，但未读到「总计获得」，请人工回看截图");
         }
 
         // 8) 关战报（蓝 X），确认战报消失
+        check();
         v.clickPointAt(this.BLUE_X[0], this.BLUE_X[1]);
         t0 = new Date().getTime();
         while (new Date().getTime() - t0 < sgs.TIMEOUT.ui) {
@@ -184,6 +197,7 @@ sgs.tasks.zhuxian = {
         }
 
         // 9) 关 BOSS 面板（同一个蓝 X 位），确认面板判据消失
+        check();
         v.clickPointAt(this.BLUE_X[0], this.BLUE_X[1]);
         t0 = new Date().getTime();
         while (new Date().getTime() - t0 < sgs.TIMEOUT.ui) {
@@ -196,6 +210,7 @@ sgs.tasks.zhuxian = {
         // 不能盲点固定两次：返回箭头 (110,70) 与主城头像 (110,95) 很近，多一下会点开玩家信息面板
         var home = false;
         for (var bi = 0; bi < 3 && !home; bi++) {
+            check();
             v.clickPointAt(this.BACK_ARROW[0], this.BACK_ARROW[1]);
             t0 = new Date().getTime();
             while (new Date().getTime() - t0 < 4000) {

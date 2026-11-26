@@ -310,8 +310,8 @@ sgs.vision = {
                 for (var i = 0; i < 60; i++) {
                     sleep(300);
                     var b = null;
-                    try { b = text("共享屏幕").findOnce(); } catch (e0) { b = null; }
-                    if (!b) { try { b = textContains("共享屏幕").findOnce(); } catch (e1) { b = null; } }
+                    try { b = text("共享屏幕").packageName("com.android.systemui").findOnce(); } catch (e0) { b = null; }
+                    if (!b) { try { b = textContains("共享屏幕").packageName("com.android.systemui").findOnce(); } catch (e1) { b = null; } }
                     if (b) {
                         var done = false;
                         try { done = b.click(); } catch (e2) { done = false; }
@@ -1010,8 +1010,10 @@ sgs.tasks.mail = {
     REWARD_REGION: [900, 80, 1900, 330],
     DISMISS: [1386, 1180],
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        check();
 
         // 1) 打开邮件弹窗
         var opened = false;
@@ -1032,7 +1034,10 @@ sgs.tasks.mail = {
         //    无可领邮件时按钮不消失、点了没反应，所以不拿按钮消失当判据。
         //    但第一轮必须真的识别到按钮：识别不到说明模板失配或弹窗没开成，
         //    继续静默走完会给出一个假的「已领取」结论，宁可直接报错。
+        var rewardSeen = false, emptySeen = false;
         for (var ci = 1; ci <= 2; ci++) {
+            check();
+            v.frame(true);
             if (!v.tapImage(this.CLAIM, 0.8, this.CLAIM_REGION)) {
                 if (ci === 1) throw new Error("未识别到「全部领取」按钮，领取结果未知");
                 sgs.log.w("第 2 轮未检测到全部领取按钮，停止重试");
@@ -1040,6 +1045,12 @@ sgs.tasks.mail = {
             }
             sgs.log.i("点击「全部领取」（第 " + ci + " 轮）");
             sleep(2000);
+            var claimImg = v.frame(true);
+            if (claimImg) {
+                if (v.find(this.REWARD, 0.8, this.REWARD_REGION, claimImg) || v.hasText("恭喜获得", this.REWARD_REGION, claimImg)) rewardSeen = true;
+                var body = v.ocrRect([600, 300, 2200, 950], claimImg).replace(/\s+/g, "");
+                if (/暂无邮件|没有可领取的附件|暂无可领取的附件|没有可领取的邮件/.test(body)) emptySeen = true;
+            }
             v.clickPointAt(this.DISMISS[0], this.DISMISS[1]);
             sleep(600);
         }
@@ -1067,6 +1078,9 @@ sgs.tasks.mail = {
         var home = v.waitImage(sgs.ANCHOR.image, sgs.TIMEOUT.ui, sgs.ANCHOR.region, 0.72);
         if (!home) throw new Error("关闭弹窗后未确认回到主城");
         sgs.log.i("邮件任务完成");
+        if (rewardSeen) return { status: "success", message: "已识别领取奖励并返回主城" };
+        if (emptySeen) return { status: "skipped", message: "已识别无可领取邮件，返回主城" };
+        return { status: "unconfirmed", message: "已点击领取并返回主城，未确认奖励或空状态" };
     }
 };
 
@@ -1207,7 +1221,7 @@ sgs.tasks.xiaoqiao = {
     },
 
     _closeResult: function () {
-        var v = sgs.vision;
+        var v = sgs.vision, completionSeen = false;
         sleep(800);
 
         // 1) 奖励弹窗：点空白优先，右上 X 兜底
@@ -1229,6 +1243,7 @@ sgs.tasks.xiaoqiao = {
 
         // 2) 旧版「执行完成」结果窗
         for (var c = 1; c <= 3 && this._done(); c++) {
+            completionSeen = true;
             v.clickPointAt(this.RESULT_CLOSE[0], this.RESULT_CLOSE[1]);
             var d3 = new Date().getTime();
             while (new Date().getTime() - d3 < sgs.TIMEOUT.ui && this._done()) sleep(700);
@@ -1238,7 +1253,7 @@ sgs.tasks.xiaoqiao = {
         for (var p = 1; p <= 3; p++) {
             if (!this._panelOpen() && sgs.vision.isHome()) {
                 sgs.log.i("已确认回到主城");
-                return;
+                return completionSeen;
             }
             if (this._panelOpen()) {
                 v.clickPointAt(this.PANEL_CLOSE[0], this.PANEL_CLOSE[1]);
@@ -1249,28 +1264,22 @@ sgs.tasks.xiaoqiao = {
                 sleep(700);
             }
         }
-        // 4) 陌生子界面兜底：误触进拍卖 / 图鉴 / 军团等页面时，点左上角返回
-        //    实测主城 2772x1280 下点 (70,70) 能从「全服拍卖」退回主城
-        //    每轮必须重新取帧：isHome() 不带参数会读缓存，第一次已回主城也看不出来，
-        //    会继续白点两次再按旧帧抛错
-        for (var q = 1; q <= 3; q++) {
-            if (sgs.vision.isHome(v.frame(true))) break;
-            sgs.log.w("未回主城，点左上角返回（第 " + q + " 轮）");
-            v.clickPointAt(70, 70);
-            sleep(2500);
-        }
+        // 未知页面不再盲点左上角；由日常恢复器识别已知页面，无法确认就停止。
         if (!sgs.vision.isHome(v.frame(true))) throw new Error("面板未能关闭并回到主城");
         sgs.log.i("已确认回到主城");
+        return completionSeen;
     },
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
-
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        check();
         this._openPanel();
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
 
-        // 点识别到的按钮本身，不用写死的坐标：图匹上了就说明位置在这，点空的风险为零
+        // 使用实际识别坐标；点击前再次检查停止请求。
+        check();
         v.clickRect(btn);
         sgs.log.i("已点击「开启」(" + btn.x + "," + btn.y + ")，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
@@ -1278,20 +1287,23 @@ sgs.tasks.xiaoqiao = {
         var deadline = new Date().getTime() + this.RUN_TIMEOUT;
         var againConfirmed = false;
         while (new Date().getTime() < deadline) {
+            check();
             if (this._findReward()) {
-                sgs.log.i("识别到完成弹窗");
-                this._closeResult();
-                return;
+                sgs.log.i("识别到奖励弹窗，整套日常状态待确认");
+                var completionSeen = this._closeResult();
+                return { status: completionSeen ? "success" : "unconfirmed",
+                    message: completionSeen ? "已确认执行完成并返回主城" : "已关闭奖励弹窗，但整套日常完成状态未确认" };
             }
             if (this._done()) {
                 sgs.log.i("识别到「执行完成」绿条");
                 this._closeResult();
-                return;
+                return { status: "success", message: "已识别执行完成标志并返回主城" };
             }
             if (!againConfirmed && v.hasText("再次执行", this.AGAIN_REGION)) {
                 if (!v.waitText("确认", this.CONFIRM_REGION, sgs.TIMEOUT.page)) {
                     throw new Error("「再次执行」弹窗未识别到确认");
                 }
+                check();
                 v.tapRect(this.CONFIRM_REGION);
                 againConfirmed = true;
                 deadline = new Date().getTime() + this.RUN_TIMEOUT;
@@ -1440,17 +1452,21 @@ sgs.tasks.junqing = {
         return false;
     },
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
-
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        check();
         if (!this._openPanel()) {
-            sgs.log.i("紧急军情今日无可挑战，任务结束");
-            return;
+            sgs.log.i("未出现可用军情入口，未发起挑战");
+            return { status: "skipped", message: "未出现可用军情入口，未发起挑战" };
         }
 
-        if (!v.tapImage(this.ONECLICK, 0.8, this.ONECLICK_REGION)) {
-            throw new Error("未识别到「一键挑战」按钮，未发起挑战");
-        }
+        check();
+        var challenge = v.find(this.ONECLICK, 0.8, this.ONECLICK_REGION, v.frame(true));
+        if (!challenge) throw new Error("未识别到「一键挑战」按钮，未发起挑战");
+        // 找图可能耗时，停止请求到来后不能继续消耗体力。
+        check();
+        v.clickPointAt(challenge.x, challenge.y);
         sgs.log.i("点击「一键挑战」");
 
         var gotReward = this._dismissReward();
@@ -1478,6 +1494,8 @@ sgs.tasks.junqing = {
         var home = v.waitImage(sgs.ANCHOR.image, sgs.TIMEOUT.ui, sgs.ANCHOR.region, 0.72);
         if (!home) throw new Error("关闭面板后未确认回到主城");
         sgs.log.i("紧急军情任务完成");
+        return { status: done === this.DONE_REGIONS.length ? "success" : "unconfirmed",
+            message: "已识别击杀关卡 " + done + "/" + this.DONE_REGIONS.length + "，已返回主城" };
     }
 };
 
@@ -1571,11 +1589,15 @@ sgs.tasks.zhuxian = {
         return "timeout";
     },
 
-    run: function () {
+    run: function (options) {
         var v = sgs.vision;
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var allowReset = options && typeof options.allowReset === "boolean" ? options.allowReset : this.allowReset;
         var summary = { reset: false, attemptsBefore: -1, swept: 0 };
+        check();
 
         // 1) 主城 → 征战 → 副本地图
+        check();
         v.clickPointAt(this.ENTER_ZHENGZHAN[0], this.ENTER_ZHENGZHAN[1]);
         sgs.log.i("[zhuxian] 点击征战入口");
         var t0 = new Date().getTime();
@@ -1591,6 +1613,7 @@ sgs.tasks.zhuxian = {
         sgs.log.i("[zhuxian] 已进入主线副本地图");
 
         // 2) 点最新回建筑 → 回详情页（左下出现「排行榜」，地图页没有此入口）
+        check();
         v.clickPointAt(this.STAGE_BUILDING[0], this.STAGE_BUILDING[1]);
         sgs.log.i("[zhuxian] 点击最新回建筑");
         t0 = new Date().getTime();
@@ -1612,6 +1635,7 @@ sgs.tasks.zhuxian = {
         sgs.log.i("[zhuxian] 已进入回详情页");
 
         // 3) 点 BOSS 角色本体 → 战斗面板
+        check();
         v.clickPointAt(this.BOSS_BODY[0], this.BOSS_BODY[1]);
         sgs.log.i("[zhuxian] 点击 BOSS 角色本体");
         if (!this._waitPanel(8)) throw new Error("点击 BOSS 后未出现战斗面板");
@@ -1624,8 +1648,9 @@ sgs.tasks.zhuxian = {
 
         // 5) 次数为 0：按开关决定是否重置
         if (attempts === 0) {
-            if (!this.allowReset) throw new Error("今日挑战次数已用完（0/5），且未允许元宝重置");
+            if (!allowReset) return { status: "skipped", message: "挑战次数为 0，日常未允许元宝重置", reset: false, attemptsBefore: 0, swept: 0 };
             sgs.log.i("[zhuxian] 次数为 0，点击重置（20 元宝）");
+            check();
             v.clickPointAt(this.SWEEP_BTN[0], this.SWEEP_BTN[1]);
             t0 = new Date().getTime();
             var dialog = false;
@@ -1634,6 +1659,7 @@ sgs.tasks.zhuxian = {
                 sleep(600);
             }
             if (!dialog) throw new Error("未出现重置确认弹窗，放弃消费");
+            check();
             v.clickPointAt(this.RESET_CONFIRM[0], this.RESET_CONFIRM[1]);
             sgs.log.i("[zhuxian] 已确认重置");
             if (!this._waitPanel(8)) throw new Error("重置后面板未恢复");
@@ -1647,6 +1673,7 @@ sgs.tasks.zhuxian = {
         if (!v.hasText("扫荡", this.SWEEP_REGION)) {
             throw new Error("未识别到扫荡按钮（可能关卡未三星或界面异常），不做盲点");
         }
+        check();
         v.clickPointAt(this.SWEEP_BTN[0], this.SWEEP_BTN[1]);
         sgs.log.i("[zhuxian] 已点击扫荡（" + attempts + " 次，预计耗体力 " + (attempts * 5) + "）");
 
@@ -1655,13 +1682,17 @@ sgs.tasks.zhuxian = {
         if (r === "no_stamina") throw new Error("体力不足，扫荡被拒绝");
         if (r === "timeout") throw new Error("未出现扫荡战报，扫荡结果未知");
         summary.swept = attempts;
-        if (v.hasText("总计获得", this.REPORT_SUM_REGION)) {
+        var totalSeen = v.hasText("总计获得", this.REPORT_SUM_REGION);
+        summary.status = totalSeen ? "success" : "unconfirmed";
+        summary.message = totalSeen ? "已确认扫荡战报和总计获得" : "已见扫荡战报，但总计获得未确认";
+        if (totalSeen) {
             sgs.log.i("[zhuxian] 战报确认：扫荡战报 + 总计获得，共扫荡 " + attempts + " 次");
         } else {
             sgs.log.w("[zhuxian] 已见扫荡战报，但未读到「总计获得」，请人工回看截图");
         }
 
         // 8) 关战报（蓝 X），确认战报消失
+        check();
         v.clickPointAt(this.BLUE_X[0], this.BLUE_X[1]);
         t0 = new Date().getTime();
         while (new Date().getTime() - t0 < sgs.TIMEOUT.ui) {
@@ -1670,6 +1701,7 @@ sgs.tasks.zhuxian = {
         }
 
         // 9) 关 BOSS 面板（同一个蓝 X 位），确认面板判据消失
+        check();
         v.clickPointAt(this.BLUE_X[0], this.BLUE_X[1]);
         t0 = new Date().getTime();
         while (new Date().getTime() - t0 < sgs.TIMEOUT.ui) {
@@ -1682,6 +1714,7 @@ sgs.tasks.zhuxian = {
         // 不能盲点固定两次：返回箭头 (110,70) 与主城头像 (110,95) 很近，多一下会点开玩家信息面板
         var home = false;
         for (var bi = 0; bi < 3 && !home; bi++) {
+            check();
             v.clickPointAt(this.BACK_ARROW[0], this.BACK_ARROW[1]);
             t0 = new Date().getTime();
             while (new Date().getTime() - t0 < 4000) {
@@ -1692,6 +1725,403 @@ sgs.tasks.zhuxian = {
         if (!home) throw new Error("扫荡完成但未能确认回到主城");
         sgs.log.i("[zhuxian] 已回到主城，任务结束 " + JSON.stringify(summary));
         return summary;
+    }
+};
+
+
+// ===== src/daily-recovery.js =====
+
+// daily-recovery.js -- conservative daily boundary recovery (Rhino ES5).
+sgs = (typeof sgs === "undefined") ? {} : sgs;
+sgs.dailyRecovery = (function () {
+    function throwCancelled(check) {
+        if (check && check()) {
+            var e = new Error("日常任务已取消");
+            e.cancelled = true;
+            throw e;
+        }
+    }
+    function regionText(v, rect, im) {
+        return rect ? String(v.ocrRect(rect, im) || "").replace(/\s+/g, "") : "";
+    }
+    function has(v, word, rect, im) { return regionText(v, rect, im).indexOf(word) >= 0; }
+    function hit(v, t, name, region, im) {
+        return t && t[name] && t[region] ? v.find(t[name], 0.85, t[region], im) : null;
+    }
+    // Every query below uses the caller's frame; never call task private helpers.
+    function inspect(im) {
+        var v = sgs.vision, ts = sgs.tasks || {}, m = ts.mail, x = ts.xiaoqiao;
+        var j = ts.junqing, z = ts.zhuxian, pages = sgs.PAGES || {}, out = {};
+        var k, p;
+        for (k in pages) {
+            if (!pages.hasOwnProperty(k)) continue;
+            p = pages[k];
+            if (p.text && p.region && has(v, p.text, p.region, im)) {
+                out.blocked = true;
+                out.exception = true;
+            }
+        }
+        if (m) {
+            out.mailClaim = hit(v, m, "CLAIM", "CLAIM_REGION", im);
+            out.mailClose = hit(v, m, "CLOSE", "CLOSE_REGION", im);
+            out.mailReward = hit(v, m, "REWARD", "REWARD_REGION", im);
+        }
+        if (x) {
+            out.again = has(v, "再次执行", x.AGAIN_REGION, im);
+            // Left button opposite CONFIRM_REGION. No inferred tap unless its label is explicit.
+            out.cancelRect = [950, 800, 1320, 925];
+            out.cancel = out.again && regionText(v, out.cancelRect, im) === "取消";
+            out.xPanel = has(v, x.TAB_TEXT || "日常功能", x.TAB_REGION, im)
+                || regionText(v, x.TAB_REGION, im) === "日常" || hit(v, x, "KAIQI", "KAIQI_REGION", im);
+            out.xReward = /恭喜获得|贡献获得/.test(regionText(v, x.REWARD_REGION, im));
+            out.xResult = has(v, "执行完成", x.COMPLETION_REGION, im);
+        }
+        if (j) {
+            out.jPanel = /敌军入侵|十万火急/.test(regionText(v, j.TITLE_REGION, im));
+            out.jReward = has(v, "恭喜获得", j.REWARD_REGION, im);
+        }
+        if (z) {
+            out.zDialog = /重置副本|元宝|体力不足|确认|取消/.test(regionText(v, z.CENTER_DIALOG_REGION, im))
+                || /重置副本|元宝/.test(regionText(v, z.RESET_DIALOG_REGION, im));
+            out.zReport = has(v, "扫荡战报", z.REPORT_TITLE_REGION, im);
+            out.zPanel = /次数.*[0-5]\/5/.test(regionText(v, z.ATTEMPT_REGION, im));
+            out.zMap = has(v, "主线副本", z.MAP_TAB_REGION, im)
+                || has(v, "跳过剧情", z.MAP_SKIP_REGION, im);
+            out.zStage = has(v, "排行榜", z.STAGE_RANK_REGION, im);
+        }
+        out.blocked = out.blocked || out.mailClaim || out.mailClose || out.mailReward
+            || out.again || out.xPanel || out.xReward || out.xResult || out.jPanel || out.jReward
+            || out.zDialog || out.zReport || out.zPanel || out.zMap || out.zStage;
+        return out;
+    }
+    function landscape(im) {
+        if (!im || im.getWidth() <= im.getHeight()) return false;
+        var ratio = im.getWidth() / im.getHeight();
+        return Math.abs(ratio - 2772 / 1280) < 0.22;
+    }
+    function strictHome(im, state) {
+        if (!landscape(im)) return false;
+        var v = sgs.vision, a = sgs.ANCHOR, roi = sgs.ROI && sgs.ROI.playerInfo;
+        if (!a || !a.region || !roi || !roi.physical || !roi.energy || state.blocked) return false;
+        if (!v.find(a.image, Math.max(0.85, a.threshold || 0), a.region, im)) return false;
+        function fraction(rect) {
+            var m = regionText(v, rect, im).match(/(\d+)\/(\d+)/);
+            return !!m && Number(m[2]) > 0;
+        }
+        return fraction(roi.physical) && fraction(roi.energy);
+    }
+    function homeReady(img) {
+        var im = img || sgs.vision.frame(true);
+        if (!landscape(im)) return false;
+        return strictHome(im, inspect(im));
+    }
+    function externalApp() {
+        if (typeof currentPackage !== "function") return true;
+        var pkg;
+        try { pkg = currentPackage(); } catch (e) { return true; }
+        // 前台未知同样不能授权点击，不能把相册中的游戏截图当作可操作游戏。
+        return pkg !== sgs.game.PKG;
+    }
+    function ensureHome(lastTaskId, checkCancelled, initial) {
+        var v = sgs.vision, start = new Date().getTime(), consecutive = 0;
+        // initial is retained for callers; login is always performed manually.
+        var ts = sgs.tasks || {}, x = ts.xiaoqiao;
+        var j = ts.junqing, z = ts.zhuxian;
+        function check() { throwCancelled(checkCancelled); }
+        function pause() { sleep(700); check(); }
+        function tap(point) {
+            check();
+            if (externalApp()) return false;
+            v.tap(point[0], point[1], 0);
+            return true;
+        }
+        for (var attempt = 0; attempt < 12 && new Date().getTime() - start < 30000; attempt++) {
+            check();
+            if (externalApp()) return false;
+            var im = v.frame(true);
+            check();
+            if (!im) return false;
+            if (!landscape(im) || externalApp()) return false;
+            var state = inspect(im);
+            check();
+            var ready = strictHome(im, state);
+            check();
+            if (externalApp()) return false;
+            if (ready) {
+                consecutive++;
+                if (consecutive >= 2) return true;
+                pause();
+                continue;
+            }
+            consecutive = 0;
+            if (externalApp()) return false;
+            var point = null;
+            // Login, relogin and notices require manual intervention, even over known panels.
+            if (state.exception) return false;
+            // Dialogs take priority over every background panel.
+            if (state.again) {
+                if (lastTaskId !== "xiaoqiao" || !state.cancel) return false;
+                var r = state.cancelRect;
+                point = [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2];
+            } else if (state.zDialog) return false;
+            else if (lastTaskId === "mail" && state.mailClaim && state.mailClose) {
+                point = [state.mailClose.x, state.mailClose.y];
+            } else if (lastTaskId === "xiaoqiao" && state.xReward) point = x.BLANK_TAP;
+            else if (lastTaskId === "xiaoqiao" && state.xPanel && !state.xResult) point = x.PANEL_CLOSE;
+            else if (lastTaskId === "junqing" && state.jReward) point = j.BLANK;
+            else if (lastTaskId === "junqing" && state.jPanel) point = j.CLOSE_X;
+            else if (lastTaskId === "zhuxian" && (state.zReport || state.zPanel)) point = z.BLUE_X;
+            else if (lastTaskId === "zhuxian" && (state.zMap || state.zStage)) point = z.BACK_ARROW;
+            if (!point || !tap(point)) return false;
+            pause();
+        }
+        check();
+        return false;
+    }
+    return { homeReady: homeReady, ensureHome: ensureHome };
+})();
+
+
+// ===== src/daily.js =====
+
+// 一键日常：保存选择和顺序，逐步确认页面，记录业务结果；不自动重试消费任务。
+sgs = (typeof sgs === "undefined") ? {} : sgs;
+sgs.daily = {
+    FILE: "/sdcard/Download/autosgs-logs/daily-plan.json",
+    RESULT_FILE: "/sdcard/Download/autosgs-logs/daily-last-result.json",
+    CATALOG: [
+        { id: "mail", name: "邮件", description: "全部领取；不消耗元宝" },
+        { id: "xiaoqiao", name: "小乔日常", description: "游戏助手一键日常；会消耗元宝" },
+        { id: "playerinfo", name: "玩家信息", description: "只读取昵称、等级和资源" },
+        { id: "junqing", name: "紧急军情", description: "一键挑战；消耗体力" },
+        { id: "zhuxian", name: "主线副本", description: "消耗体力；日常中不花元宝重置，0 次则跳过" }
+    ],
+
+    info: function (id) {
+        for (var i = 0; i < this.CATALOG.length; i++) if (this.CATALOG[i].id === id) return this.CATALOG[i];
+        return null;
+    },
+    defaultPlan: function () {
+        var plan = [];
+        for (var i = 0; i < this.CATALOG.length; i++) {
+            var id = this.CATALOG[i].id;
+            plan.push({ id: id, enabled: id === "mail" || id === "xiaoqiao" });
+        }
+        return plan;
+    },
+    validatePlan: function (plan) {
+        if (Object.prototype.toString.call(plan) !== "[object Array]") throw new Error("日常方案必须是任务列表");
+        var out = [], seen = {};
+        for (var i = 0; i < plan.length; i++) {
+            var item = plan[i];
+            if (!item || typeof item.id !== "string" || !this.info(item.id) || typeof item.enabled !== "boolean") throw new Error("日常方案含无效任务或开关");
+            if (seen[item.id]) throw new Error("日常方案含重复任务 " + item.id);
+            seen[item.id] = true;
+            out.push({ id: item.id, enabled: item.enabled });
+        }
+        // 新增或省略的任务默认不选，不能让配置升级自动增加资源消费。
+        for (var j = 0; j < this.CATALOG.length; j++) {
+            var id = this.CATALOG[j].id;
+            if (!seen[id]) out.push({ id: id, enabled: false });
+        }
+        return out;
+    },
+    _guard: function (file) {
+        if (file !== this.FILE && file !== this.RESULT_FILE) throw new Error("非日常配置路径");
+        var expected = file.replace("/sdcard/", "/storage/emulated/0/");
+        if (String(new java.io.File(file).getCanonicalPath()) !== expected
+            || String(new java.io.File(file + ".tmp").getCanonicalPath()) !== expected + ".tmp") throw new Error("日常文件路径异常");
+    },
+    _write: function (file, value) {
+        this._guard(file);
+        files.ensureDir("/sdcard/Download/autosgs-logs/");
+        var tmp = file + ".tmp";
+        files.write(tmp, JSON.stringify(value, null, 2));
+        if (!new java.io.File(tmp).renameTo(new java.io.File(file))) throw new Error("日常文件保存失败，保留原文件");
+    },
+    loadPlan: function () {
+        if (!files.exists(this.FILE)) return this.defaultPlan();
+        this._guard(this.FILE);
+        var saved = JSON.parse(String(files.read(this.FILE)));
+        if (!saved || saved.version !== 1) throw new Error("日常配置版本无效，请打开设置检查并保存");
+        return this.validatePlan(saved.items);
+    },
+    savePlan: function (plan) {
+        if (sgs.ui && sgs.ui.isBusy()) throw new Error("任务运行中，请停止后再修改日常方案");
+        var items = this.validatePlan(plan);
+        this._write(this.FILE, { version: 1, items: items });
+        return items;
+    },
+    planLabel: function (plan) {
+        plan = this.validatePlan(plan || this.loadPlan());
+        var names = [];
+        for (var i = 0; i < plan.length; i++) if (plan[i].enabled) names.push(this.info(plan[i].id).name);
+        return names.length ? names.join(" → ") : "未选择任务";
+    },
+    _cancelled: function (options) {
+        if (options.isCancelled && options.isCancelled()) return true;
+        try { return java.lang.Thread.currentThread().isInterrupted(); } catch (e) { return false; }
+    },
+    _check: function (options) {
+        if (this._cancelled(options)) {
+            var e = new Error("日常已停止");
+            e.cancelled = true;
+            throw e;
+        }
+    },
+    _result: function (id, value) {
+        if (id === "playerinfo") {
+            var fields = ["nickname", "level", "combat_power", "physical", "energy", "sycee", "jade"], missing = [];
+            for (var i = 0; i < fields.length; i++) {
+                var cell = value && value[fields[i]], v = cell && cell.value, valid = false;
+                if (fields[i] === "nickname") valid = typeof v === "string" && !!v.replace(/\s+/g, "");
+                else if (fields[i] === "physical" || fields[i] === "energy") {
+                    valid = !!v && typeof v.current === "number" && isFinite(v.current) && v.current >= 0 && Math.floor(v.current) === v.current
+                        && typeof v.max === "number" && isFinite(v.max) && v.max > 0 && Math.floor(v.max) === v.max;
+                } else {
+                    valid = typeof v === "number" && isFinite(v) && v >= 0;
+                    if (fields[i] === "level") valid = valid && v > 0 && Math.floor(v) === v;
+                }
+                if (!valid) missing.push(fields[i]);
+            }
+            return { status: missing.length ? "failed" : "success", message: missing.length ? "字段未读到：" + missing.join("、") : "7 个字段读取完成" };
+        }
+        if (value && (value.status === "success" || value.status === "skipped" || value.status === "unconfirmed" || value.status === "failed")) {
+            return { status: value.status, message: String(value.message || "") };
+        }
+        return { status: "unconfirmed", message: "任务未返回可确认的业务结果，不计入成功" };
+    },
+    _finish: function (report) {
+        report.endedAt = new Date().getTime();
+        report.durationMs = report.endedAt - report.startedAt;
+        var counts = { success: 0, skipped: 0, unconfirmed: 0, failed: 0, not_run: 0, cancelled: 0 };
+        for (var i = 0; i < report.items.length; i++) counts[report.items[i].status]++;
+        report.counts = counts;
+        if (!report.status) {
+            if (!report.items.length) report.status = "empty";
+            else if (report.aborted || counts.failed || counts.unconfirmed || counts.not_run) report.status = counts.success || counts.skipped ? "partial" : "failed";
+            else report.status = "success";
+        }
+        try { this._write(this.RESULT_FILE, report); } catch (e) { sgs.log.w("保存日常结果失败 " + e); }
+        return report;
+    },
+    lastSummary: function () {
+        try {
+            if (!files.exists(this.RESULT_FILE)) return "暂无日常执行记录";
+            this._guard(this.RESULT_FILE);
+            var report = JSON.parse(String(files.read(this.RESULT_FILE)));
+            if (!report || report.version !== 1 || !report.counts) return "最近结果不可读";
+            return this.formatReport(report);
+        } catch (e) { return "最近结果不可读"; }
+    },
+    formatReport: function (report) {
+        if (!report) return "暂无日常结果";
+        if (report.status === "empty") return "未选择日常任务";
+        var c = report.counts;
+        var text = "成功 " + c.success + " / 跳过 " + c.skipped;
+        if (c.unconfirmed) text += " / 待确认 " + c.unconfirmed;
+        if (c.failed) text += " / 失败 " + c.failed;
+        if (c.not_run) text += " / 未执行 " + c.not_run;
+        if (report.status === "cancelled") text = "已停止 · " + text;
+        return text;
+    },
+    run: function (options) {
+        options = options || {};
+        // 配置损坏直接失败；不能悄悄退回会消耗元宝的默认方案。
+        var plan = options.plan ? this.validatePlan(options.plan) : this.loadPlan();
+        var report = { version: 1, startedAt: new Date().getTime(), plan: plan, items: [], aborted: false };
+        for (var p = 0; p < plan.length; p++) if (plan[p].enabled) {
+            report.items.push({ id: plan[p].id, name: this.info(plan[p].id).name, status: "not_run", message: "尚未执行" });
+        }
+        var self = this, previous = null;
+        function cancelled() { return self._cancelled(options); }
+        function stopRemaining(from, reason) {
+            for (var n = from; n < report.items.length; n++) report.items[n].message = reason;
+        }
+        for (var i = 0; i < report.items.length; i++) {
+            var item = report.items[i], taskStarted = false;
+            try {
+                this._check(options);
+                if (!sgs.dailyRecovery.ensureHome(previous, cancelled, i === 0)) {
+                    report.aborted = true;
+                    report.error = "未确认可操作主城，停止后续任务";
+                    stopRemaining(i, report.error);
+                    break;
+                }
+                this._check(options);
+                item.startedAt = new Date().getTime();
+                if (options.onProgress) options.onProgress(i + 1, report.items.length, item);
+                sgs.log.i("--- 日常 " + (i + 1) + "/" + report.items.length + "：" + item.name + " ---");
+                var task = sgs.tasks[item.id];
+                if (!task || typeof task.run !== "function") throw new Error("任务模块不存在 " + item.id);
+                taskStarted = true;
+                var taskOptions = { checkCancelled: function () { self._check(options); } };
+                if (item.id === "zhuxian") taskOptions.allowReset = false;
+                var raw = task.run(taskOptions);
+                this._check(options);
+                var result = this._result(item.id, raw);
+                item.status = result.status;
+                item.message = result.message;
+            } catch (e) {
+                if ((e && e.cancelled) || cancelled()) {
+                    if (taskStarted) item.status = "cancelled";
+                    item.message = "用户停止";
+                    stopRemaining(i + 1, "前序任务已停止");
+                    report.status = "cancelled";
+                    break;
+                }
+                item.message = String(e);
+                if (!taskStarted) {
+                    report.aborted = true;
+                    report.error = "任务开始前检查失败：" + e;
+                    stopRemaining(i + 1, report.error);
+                    break;
+                }
+                item.status = "failed";
+                sgs.log.e(item.name + " 失败: " + e);
+            } finally {
+                item.endedAt = new Date().getTime();
+                item.durationMs = item.endedAt - (item.startedAt || item.endedAt);
+            }
+            previous = item.id;
+            try {
+                this._check(options);
+                var home = sgs.dailyRecovery.ensureHome(item.id, cancelled, false);
+                this._check(options);
+                item.homeRecovered = home;
+                if (!home) {
+                    report.aborted = true;
+                    report.error = "未能从" + item.name + "恢复主城，后续任务不执行";
+                    item.resultBeforeRecovery = item.status;
+                    item.status = "failed";
+                    item.message += "；恢复主城失败";
+                    stopRemaining(i + 1, report.error);
+                    break;
+                }
+                // 消费型长流程失败时可能仍在游戏内运行；即使回城也不继续或重试。
+                if ((item.id === "xiaoqiao" || item.id === "zhuxian") && (item.status === "failed" || item.status === "unconfirmed")) {
+                    report.aborted = true;
+                    report.error = item.name + "结果未确认，停止后续任务以避免交叉执行";
+                    stopRemaining(i + 1, report.error);
+                    break;
+                }
+            } catch (recoveryError) {
+                if ((recoveryError && recoveryError.cancelled) || cancelled()) {
+                    report.status = "cancelled";
+                    stopRemaining(i + 1, "恢复期间用户停止");
+                } else {
+                    report.aborted = true;
+                    report.error = "恢复主城异常：" + recoveryError;
+                    item.resultBeforeRecovery = item.status;
+                    item.status = "failed";
+                    item.message += "；" + report.error;
+                    stopRemaining(i + 1, report.error);
+                }
+                break;
+            }
+            sgs.log.i("日常结果 " + item.name + "：" + item.status + " " + item.message);
+        }
+        return this._finish(report);
     }
 };
 
@@ -1709,7 +2139,7 @@ sgs.ui = {
     ballView: null, ballLp: null,
     _views: [], _disposed: false,
     dockView: null,
-    panelView: null, _statusTv: null, _logTv: null,
+    panelView: null, dailySettingsView: null, _statusTv: null, _logTv: null,
 
     _thread: null, _t0: 0, _tick: null, _lastResult: "", _token: null,
 
@@ -1819,7 +2249,7 @@ sgs.ui = {
                     var lp = view.getLayoutParams();
                     if (!lp || lp.type != android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) continue;
                     var tag = String(view.getTag());
-                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel";
+                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel" || tag === "auto-sgs:daily-settings";
                     // 兼容旧版无标签的球：同时匹配类型、文字、尺寸、背景形状及颜色。
                     if (!owned && view instanceof android.widget.TextView && String(view.getText()) === "三"
                         && lp.width === self.px(54) && lp.height === self.px(54)) {
@@ -1848,7 +2278,7 @@ sgs.ui = {
         this._disposed = true;
         this._stopTick();
         this.ballView = null; this.ballLp = null;
-        this.dockView = null; this.panelView = null;
+        this.dockView = null; this.panelView = null; this.dailySettingsView = null;
         this._statusTv = null; this._logTv = null;
         var self = this;
         this._onMainSync(function () {
@@ -2151,6 +2581,15 @@ sgs.ui = {
         this._margins(line, 0, 8, 0, 2);
         root.addView(line);
 
+        if (sgs.dailyUI) {
+            var settings = this._tv("日常设置 · 勾选与排序 ›", 12, this.C.gold, true);
+            settings.setPadding(0, this.px(10), 0, this.px(10));
+            settings.setClickable(true);
+            settings.setOnClickListener(new android.view.View.OnClickListener({
+                onClick: function () { sgs.dailyUI.show(); }
+            }));
+            root.addView(settings);
+        }
         // 任务行
         for (var i = 0; i < this.TASKS.length; i++) root.addView(this._row(this.TASKS[i]));
 
@@ -2184,9 +2623,14 @@ sgs.ui = {
         }));
         root.addView(stop);
 
-        var lp = this._lp(W, -2, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
-        this.panelView = root;
-        this._attachWindow(root, lp, "panel", "panelView");
+        // 横屏空间有限，完整面板可滚动，避免新增设置把底部按钮挤出屏幕。
+        var scroll = new android.widget.ScrollView(this._ctx);
+        scroll.setFillViewport(true);
+        scroll.addView(root);
+        var height = Math.max(1, Math.min(this._ctx.getResources().getDisplayMetrics().heightPixels - this.px(32), this.px(600)));
+        var lp = this._lp(W, height, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
+        this.panelView = scroll;
+        this._attachWindow(scroll, lp, "panel", "panelView");
         this._startTick();
         sgs.log.i("完整面板已展开");
     },
@@ -2224,7 +2668,13 @@ sgs.ui = {
         blp.setMargins(this.px(9), 0, this.px(5), 0);
         box.setLayoutParams(blp);
         box.addView(this._tv(t.title, 13, this.C.text, true));
-        box.addView(this._tv(t.desc, 9, this.C.sub, false));
+        var description = t.desc;
+        if (t.id === "daily" && sgs.daily) {
+            try { description = sgs.daily.planLabel(); }
+            catch (e) { description = "配置需检查，请打开日常设置"; }
+        }
+        box.addView(this._tv(description, 9, this.C.sub, false));
+        if (t.id === "daily" && sgs.daily) box.addView(this._tv(sgs.daily.lastSummary(), 9, this.C.sub, false));
         row.addView(box);
 
         var arrow = this._tv("›", 15, this.C.sub, false);
@@ -2291,6 +2741,8 @@ sgs.ui = {
     runTask: function (id, label) {
         var self = this;
         if (this.isBusy()) { toast("任务执行中"); return; }
+        this.hideDock(); this.hidePanel();
+        if (sgs.dailyUI) sgs.dailyUI.hide();
         if (id === "daily") { this.runDaily(label); return; }
         this._t0 = new Date().getTime();
         this._paintBall(true);
@@ -2307,82 +2759,76 @@ sgs.ui = {
                     self._lastResult = "截图 " + Math.round((new Date().getTime() - t0) / 1000) + "s ✓";
                     return;
                 }
-                if (!sgs.game.ensure(120000)) throw new Error("未进入主城");
+                if (!sgs.dailyRecovery.ensureHome(null, function () { return self._token !== token; }, false)) {
+                    throw new Error("未确认主城，请先手动登录；不会自动登录或切号");
+                }
                 var task = sgs.tasks[id];
                 if (!task) throw new Error("任务不存在 " + id);
-                task.run();
+                var result = task.run({ checkCancelled: function () {
+                    if (self._token !== token) { var e = new Error("任务已停止"); e.cancelled = true; throw e; }
+                } });
+                var state = sgs.daily._result(id, result);
+                var names = { success: "成功", skipped: "跳过", unconfirmed: "待确认", failed: "失败" };
                 var cost = Math.round((new Date().getTime() - t0) / 1000);
-                sgs.log.i("=== " + label + " 完成 " + cost + "s ===");
-                toast(label + " 完成 " + cost + "s");
-                self._lastResult = label + " " + cost + "s ✓";
+                sgs.log.i("=== " + label + " " + names[state.status] + " " + cost + "s：" + state.message + " ===");
+                if (self._token === token) {
+                    toast(label + " " + names[state.status] + " " + cost + "s");
+                    self._lastResult = label + " " + names[state.status] + " " + cost + "s";
+                }
             } catch (e) {
                 sgs.log.e("任务异常: " + e + " || stack=" + (e && e.stack ? e.stack : "-"));
-                toast("异常: " + e);
-                self._lastResult = "上次失败 ✗";
+                if (self._token === token) { toast("异常: " + e); self._lastResult = "上次失败 ✗"; }
             } finally {
-                // 只有自己仍是当前任务才清状态：旧任务收尾不能把新任务的 _thread/_t0 抹掉
+                try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
+                try { sgs.pushLog(); } catch (e3) { }
+                // 回传也属于本线程；完成后才释放互斥。
                 if (self._token === token) {
                     self._t0 = 0;
                     self._thread = null;
                     self._paintBall(false);
                 }
-                try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
-                try { sgs.pushLog(); } catch (e3) { }
                 self._post(function () { self._refresh(); });
             }
         });
     },
 
-    /** 一键日常：邮件 → 小乔，各自独立 catch，一个失败不阻塞另一个 */
-    runDaily: function (label) {
+    /** 日常顺序、选择、结果和恢复统一交给执行器。 */
+    runDaily: function (label, planOverride) {
         var self = this;
         if (this.isBusy()) { toast("任务执行中"); return; }
+        this.hideDock(); this.hidePanel();
+        if (sgs.dailyUI) sgs.dailyUI.hide();
         this._t0 = new Date().getTime();
         this._paintBall(true);
         var token = {};
         this._token = token;
         this._thread = threads.start(function () {
-            var t0 = new Date().getTime();
-            var done = [], fail = [];
             try {
-                sgs.log.i("=== 开始 一键日常 ===");
-                if (!sgs.game.ensure(120000)) throw new Error("未进入主城");
-
-                var steps = [
-                    { id: "mail", name: "邮件" },
-                    { id: "xiaoqiao", name: "小乔日常" }
-                ];
-                for (var i = 0; i < steps.length; i++) {
-                    var st = steps[i];
-                    try {
-                        sgs.log.i("--- 日常 " + (i + 1) + "/2：" + st.name + " ---");
-                        sgs.tasks[st.id].run();
-                        done.push(st.name);
-                    } catch (e) {
-                        sgs.log.e(st.name + " 失败: " + e);
-                        fail.push(st.name);
-                        try { sgs.pushShot(); } catch (e2) { }
+                sgs.log.i("=== 开始 " + (label || "一键日常") + "：" + sgs.daily.planLabel(planOverride) + " ===");
+                var report = sgs.daily.run({
+                    plan: planOverride,
+                    isCancelled: function () { return self._token !== token; },
+                    onProgress: function (index, total, item) {
+                        if (self._token !== token) return;
+                        self._lastResult = "日常 " + index + "/" + total + " · " + item.name;
+                        self._post(function () { self._refresh(); });
                     }
-                }
-
-                var cost = Math.round((new Date().getTime() - t0) / 1000);
-                var msg = "完成 " + done.length + "/2";
-                if (fail.length) msg += "，失败 " + fail.join("/");
-                sgs.log.i("=== 一键日常 " + msg + " " + cost + "s ===");
-                toast("一键日常 " + msg + " " + cost + "s");
-                self._lastResult = "日常 " + msg + " " + cost + "s";
+                });
+                self._dailyReport = report;
+                var msg = sgs.daily.formatReport(report);
+                sgs.log.i("=== 一键日常 " + msg + (report.error ? "；" + report.error : "") + " ===");
+                if (self._token === token) { toast(msg); self._lastResult = "日常 " + msg; }
             } catch (e) {
                 sgs.log.e("一键日常异常: " + e);
-                toast("异常: " + e);
-                self._lastResult = "上次失败 ✗";
+                if (self._token === token) { toast("日常未完成：" + e); self._lastResult = "日常失败 · 请查看日志"; }
             } finally {
+                try { if (sgs.pushShot) sgs.pushShot(); } catch (e4) { }
+                try { sgs.pushLog(); } catch (e5) { }
                 if (self._token === token) {
                     self._t0 = 0;
                     self._thread = null;
                     self._paintBall(false);
                 }
-                try { sgs.pushShot(); } catch (e4) { }
-                try { sgs.pushLog(); } catch (e5) { }
                 self._post(function () { self._refresh(); });
             }
         });
@@ -2432,6 +2878,198 @@ if (typeof events !== "undefined") {
         try { sgs.ui.dispose(); } catch (e) { try { sgs.log.e("退出清理失败 " + e); } catch (ignored) { } }
     });
 }
+
+
+// ===== src/daily-ui.js =====
+
+// daily-ui.js —— 日常计划编辑器；只保存配置，不执行任务。
+sgs = (typeof sgs === "undefined") ? {} : sgs;
+
+sgs.dailyUI = {
+    _request: 0,
+
+    _copy: function (plan) {
+        var result = [];
+        for (var i = 0; i < plan.length; i++) result.push({ id: plan[i].id, enabled: plan[i].enabled });
+        return result;
+    },
+
+    show: function () {
+        var self = this, ui = sgs.ui;
+        if (ui._disposed || ui.dailySettingsView) return;
+        if (ui.isBusy()) { toast("任务执行中，不能编辑日常设置"); return; }
+        var request = ++this._request;
+        ui._post(function () {
+            if (request !== self._request || ui._disposed || ui.dailySettingsView) return;
+            if (ui.isBusy()) { toast("任务执行中，不能编辑日常设置"); return; }
+            ui.hideDock();
+            ui.hidePanel();
+            self._show(ui);
+        });
+    },
+
+    hide: function () {
+        ++this._request;
+        var ui = sgs.ui, view = ui.dailySettingsView;
+        ui.dailySettingsView = null;
+        if (view) ui._removeWindow(view);
+    },
+
+    _show: function (ui) {
+        var self = this, daily = sgs.daily, draft, damaged = false;
+        try { draft = this._copy(daily.loadPlan()); }
+        catch (e) {
+            draft = this._copy(daily.defaultPlan());
+            damaged = true;
+            try { sgs.log.w("日常配置读取失败，等待用户明确保存：" + e); } catch (ignored) { }
+        }
+        var root = new android.widget.LinearLayout(ui._ctx);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        root.setPadding(ui.px(10), ui.px(10), ui.px(10), ui.px(10));
+        root.setBackground(ui._shape(ui.C.bg, ui.C.goldDim, 1, 14));
+        root.setElevation(ui.px(12));
+
+        function live() { return !ui._disposed && ui.dailySettingsView === root; }
+        function editable() {
+            if (!live()) return false;
+            if (ui.isBusy()) { toast("任务执行中，不能编辑或保存日常设置"); return false; }
+            return true;
+        }
+        function vertical() {
+            var view = new android.widget.LinearLayout(ui._ctx);
+            view.setOrientation(android.widget.LinearLayout.VERTICAL);
+            view.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+            return view;
+        }
+        function button(text, callback, color) {
+            var view = ui._tv(text, 12, color || ui.C.text, true);
+            view.setGravity(android.view.Gravity.CENTER);
+            view.setPadding(ui.px(8), ui.px(10), ui.px(8), ui.px(10));
+            view.setBackground(ui._shape(ui.C.card, ui.C.line, 1, 7));
+            view.setClickable(true);
+            view.setOnClickListener(new android.view.View.OnClickListener({ onClick: callback }));
+            return view;
+        }
+        root.addView(ui._tv("一键日常 · 设置", 16, ui.C.gold, true));
+        var actions = new android.widget.LinearLayout(ui._ctx);
+        actions.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        actions.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        ui._margins(actions, 0, 8, 0, 6);
+        var save = button("保存", function () {
+            if (!editable()) return;
+            try { daily.savePlan(self._copy(draft)); }
+            catch (e) {
+                status.setText("保存失败：" + e + "\n草稿已保留，请检查后重试。");
+                status.setTextColor(ui.hex(ui.C.danger));
+                return;
+            }
+            self.hide();
+            ui.showPanel();
+        }, ui.C.ok);
+        save.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1));
+        actions.addView(save);
+        var cancel = button("取消", function () {
+            if (!live()) return;
+            self.hide();
+            ui.showPanel();
+        });
+        cancel.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1));
+        ui._margins(cancel, 6, 0, 0, 0);
+        actions.addView(cancel);
+        root.addView(actions);
+
+        // 固定标题和保存/取消，所有提示和条目均放入滚动区域，横屏也能操作。
+        var scroll = new android.widget.ScrollView(ui._ctx);
+        scroll.setFillViewport(true);
+        scroll.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, 0, 1));
+        var body = vertical();
+        var status = ui._tv(damaged
+            ? "警告：已保存的日常配置损坏！\n当前展示默认草稿，尚未修复。请检查后明确点击保存；取消会保留原配置。"
+            : "勾选要执行的任务，用上移/下移调整顺序。所有更改仅为草稿，保存后才生效。", 12, damaged ? ui.C.danger : ui.C.sub, damaged);
+        status.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        body.addView(status);
+        var cost = ui._tv("成本提示：小乔日常消耗元宝；紧急军情消耗体力约30；日常主线扫荡不花元宝重置，剩余0次会跳过。请按需勾选。", 11, ui.C.busy, false);
+        cost.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        ui._margins(cost, 0, 8, 0, 6);
+        body.addView(cost);
+        var summary = ui._tv("", 11, ui.C.gold, false);
+        summary.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        body.addView(summary);
+        var list = vertical();
+        body.addView(list);
+
+        function catalogEntry(id) {
+            for (var i = 0; i < daily.CATALOG.length; i++) if (daily.CATALOG[i].id === id) return daily.CATALOG[i];
+            throw new Error("未知日常任务：" + id);
+        }
+        // 每次调用单独捕获 index，避免 Rhino 的 var 循环闭包共享位置。
+        function makeRow(index) {
+            var item = draft[index], entry = catalogEntry(item.id), card = vertical();
+            card.setBackground(ui._shape(ui.C.card, ui.C.line, 1, 8));
+            card.setPadding(ui.px(8), ui.px(7), ui.px(8), ui.px(7));
+            ui._margins(card, 0, 7, 0, 0);
+            var check = button((item.enabled ? "☑ " : "☐ ") + (index + 1) + ". " + entry.name, function () {
+                if (!editable()) return;
+                draft[index].enabled = !draft[index].enabled;
+                render();
+            }, item.enabled ? ui.C.ok : ui.C.text);
+            check.setGravity(android.view.Gravity.LEFT | android.view.Gravity.CENTER_VERTICAL);
+            check.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+            card.addView(check);
+            var description = ui._tv(String(entry.description || ""), 11, ui.C.sub, false);
+            description.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+            card.addView(description);
+            var order = new android.widget.LinearLayout(ui._ctx);
+            order.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            order.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+            function move(delta) {
+                if (!editable()) return;
+                var target = index + delta;
+                if (target < 0 || target >= draft.length) return;
+                var temp = draft[index];
+                draft[index] = draft[target];
+                draft[target] = temp;
+                render();
+            }
+            var up = button("↑ 上移", function () { move(-1); });
+            var down = button("↓ 下移", function () { move(1); });
+            up.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1));
+            down.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1));
+            up.setEnabled(index > 0);
+            down.setEnabled(index < draft.length - 1);
+            up.setAlpha(index > 0 ? 1 : 0.35);
+            down.setAlpha(index < draft.length - 1 ? 1 : 0.35);
+            order.addView(up);
+            order.addView(down);
+            card.addView(order);
+            return card;
+        }
+        function render() {
+            list.removeAllViews();
+            for (var i = 0; i < draft.length; i++) list.addView(makeRow(i));
+            summary.setText("草稿顺序：" + daily.planLabel(draft));
+        }
+        var reset = button("恢复默认（仅修改草稿）", function () {
+            if (!editable()) return;
+            draft = self._copy(daily.defaultPlan());
+            render();
+            toast("已恢复默认草稿，点击保存后生效");
+        }, ui.C.gold);
+        reset.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        ui._margins(reset, 0, 10, 0, 0);
+        body.addView(reset);
+        scroll.addView(body);
+        root.addView(scroll);
+        render();
+        var metrics = ui._ctx.getResources().getDisplayMetrics();
+        var height = Math.max(1, Math.min(metrics.heightPixels - ui.px(32), ui.px(600)));
+        var lp = ui._lp(ui.px(290), height, ui.px(8), 0,
+            android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
+        if (ui._disposed || ui.dailySettingsView) return;
+        ui.dailySettingsView = root;
+        ui._attachWindow(root, lp, "daily-settings", "dailySettingsView");
+    }
+};
 
 // ===== 启动（分步执行，每步单独 catch，便于定位）=====
 sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) + " ===");
@@ -2523,6 +3161,14 @@ threads.start(function () {
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
                 }
+                if (__tid2 === "daily:readonly") {
+                    sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
+                    continue;
+                }
+                if (__tid2 === "daily:settings") {
+                    sgs.dailyUI.show();
+                    continue;
+                }
                 // 单步点击：tap:x,y —— 点完自动存档一帧，方便逐步确认界面（换号这类一次性流程用）
                 if (__tid2.indexOf("tap:") === 0) {
                     var __xy = __tid2.substring(4).split(",");
@@ -2579,7 +3225,11 @@ threads.start(function () {
         var cmd = String(cr.body.string()).replace(/[ \r\n\t]+/g, "");
         if (cmd && cmd != "none") {
             sgs.log.i("[cmd] " + cmd);
-            if (cmd.indexOf("run:") == 0) {
+            if (cmd === "daily:readonly") {
+                sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
+            } else if (cmd === "daily:settings") {
+                sgs.dailyUI.show();
+            } else if (cmd.indexOf("run:") == 0) {
                 var tid = cmd.substring(4);
                 // 原来这里先清 _t0 再启动，等于主动绕过互斥，会让两个任务并行抢点击
                 if (sgs.ui.isBusy()) sgs.log.w("[cmd] 任务运行中，拒绝 " + tid);

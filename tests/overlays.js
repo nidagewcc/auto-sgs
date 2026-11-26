@@ -82,14 +82,14 @@ function harness() {
     };
     const sandbox = {
         sgs: { log: Object.fromEntries(['i', 'w', 'e'].map(level => [level, message => logs.push([level, message])])) },
-        context: { getResources: () => ({ getDisplayMetrics: () => ({ density: 2 }) }), getSystemService: () => wm },
+        context: { getResources: () => ({ getDisplayMetrics: () => ({ density: 2, heightPixels: 1280 }) }), getSystemService: () => wm },
         android: {
             content: { Context: { WINDOW_SERVICE: 'window' } },
             os: { Looper: { getMainLooper: () => mainLooper, myLooper: () => mainThread ? mainLooper : {} },
                 Handler: class { post(runnable) { queue.push(runnable); return true; } } },
             view: { View, WindowManager: { LayoutParams }, Gravity: {},
                 inspector: { WindowInspector: { getGlobalWindowViews: () => ({ size: () => roots.length, get: i => roots[i] }) } } },
-            widget: { TextView, LinearLayout },
+            widget: { TextView, LinearLayout, ScrollView: class extends View { setFillViewport() {} } },
             graphics: { drawable: { GradientDrawable }, PixelFormat: {}, Typeface: {} }
         },
         java: {
