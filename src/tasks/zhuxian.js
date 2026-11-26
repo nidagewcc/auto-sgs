@@ -39,8 +39,11 @@ sgs.tasks.zhuxian = {
     SWEEP_REGION: [1780, 800, 2145, 960],       // 扫荡/重置按钮
     RESET_DIALOG_REGION: [1050, 520, 1750, 680],// 「是否花费20元宝重置副本」
     REPORT_TITLE_REGION: [1150, 85, 1650, 180], // 「扫荡战报」
-    REPORT_SUM_REGION: [950, 760, 1850, 900],   // 「总计获得」金色条（实测在战报弹窗约 2/3 高度处）
+    REPORT_SUM_REGION: [950, 760, 1850, 900],   // 历史实测「总计获得」金色条
+    REPORT_SUM_WIDE_REGION: [650, 650, 2150, 1050], // 兼容机型缩放后的金色条
+    REPORT_BODY_REGION: [500, 550, 2300, 1150], // 战报正文，仅在已确认战报标题后使用
     CENTER_DIALOG_REGION: [900, 500, 1900, 800],// 体力不足等居中弹窗
+    REPORT_KEYWORDS: ["总计获得", "累计获得", "共获得"],
 
     /** 读战斗面板上的剩余挑战次数，返回 N（0~5），读不到返回 -1 */
     _readAttempts: function () {
@@ -71,6 +74,33 @@ sgs.tasks.zhuxian = {
             sleep(700);
         }
         return false;
+    },
+
+    _confirmReward: function (img) {
+        var v = sgs.vision, raw = [];
+        function read(rect) {
+            var text = v.ocrRect(rect, img || v.frame(true)).replace(/\s+/g, "");
+            raw.push(text);
+            return text;
+        }
+        // 先保留原窄区域；若金色艺术字位置因版本变化，再查较宽区域和战报正文。
+        var regions = [this.REPORT_SUM_REGION, this.REPORT_SUM_WIDE_REGION, this.REPORT_BODY_REGION];
+        for (var i = 0; i < regions.length; i++) {
+            var text = read(regions[i]);
+            for (var j = 0; j < this.REPORT_KEYWORDS.length; j++) {
+                if (text.indexOf(this.REPORT_KEYWORDS[j]) >= 0) {
+                    return { ok: true, raw: raw };
+                }
+            }
+        }
+        return { ok: false, raw: raw };
+    },
+
+    _saveRewardDiagnostic: function (raw) {
+        try {
+            var p = sgs.debugShots.save(sgs.vision.frame(true), "zhuxian_total_unconfirmed");
+            sgs.log.w("[zhuxian] 收益证据不足，已保存战报调试图 " + p + " OCR=" + JSON.stringify(raw));
+        } catch (e) { sgs.log.w("[zhuxian] 收益证据不足，调试图保存失败 " + e); }
     },
 
     /** 等扫荡战报，期间识别体力不足等拒绝弹窗 */
@@ -182,14 +212,16 @@ sgs.tasks.zhuxian = {
         if (r === "no_stamina") throw new Error("体力不足，扫荡被拒绝");
         if (r === "timeout") throw new Error("未出现扫荡战报，扫荡结果未知");
         summary.swept = attempts;
-        var totalSeen = v.hasText("总计获得", this.REPORT_SUM_REGION);
+        var reward = this._confirmReward();
+        var totalSeen = reward.ok;
         summary.status = totalSeen ? "success" : "unconfirmed";
         summary.message = "已扫荡 " + attempts + " 次" + (summary.reset ? "，已重置 20 元宝" : "，未重置")
-            + (totalSeen ? "，战报与总计获得已确认" : "，已见战报但收益未确认");
+            + (totalSeen ? "，战报与收益汇总已确认" : "，已见战报但收益汇总未确认");
         if (totalSeen) {
-            sgs.log.i("[zhuxian] 战报确认：扫荡战报 + 总计获得，共扫荡 " + attempts + " 次");
+            sgs.log.i("[zhuxian] 战报确认：扫荡战报 + 收益汇总，共扫荡 " + attempts + " 次");
         } else {
-            sgs.log.w("[zhuxian] 已见扫荡战报，但未读到「总计获得」，请人工回看截图");
+            sgs.log.w("[zhuxian] 已见扫荡战报，但未读到收益汇总，OCR=" + JSON.stringify(reward.raw));
+            this._saveRewardDiagnostic(reward.raw);
         }
 
         progress("返回主城", summary.message + "，正在关闭战报与面板");

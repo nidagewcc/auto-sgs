@@ -35,7 +35,8 @@ function load(id) {
         static now() { return now; }
     }
     const sgs = {
-        tasks: {}, vision, log: { i() {}, w() {}, e() {} },
+        tasks: {}, vision, debugShots: { save: () => null },
+        log: { i() {}, w() {}, e() {} },
         TIMEOUT: { page: 1400, ui: 1400 }, ANCHOR: { image: 'home', region: [0, 0, 1, 1] }
     };
     const context = vm.createContext({
@@ -170,11 +171,17 @@ test('junqing: cancellation during native image matching prevents spending click
     assert.deepStrictEqual(f.clicks, []);
 });
 
-function zhuxian(attempts, totalSeen) {
+function zhuxian(attempts, rewardText) {
     const f = load('zhuxian');
-    let reset = false;
-    f.vision.hasText = text => ['主线副本', '排行榜', '扫荡', '重置副本'].includes(text) || (text === '总计获得' && totalSeen);
-    f.vision.ocrRect = region => region === f.task.ATTEMPT_REGION ? '次数 ' + (reset ? 5 : attempts) + '/5' : '';
+    let reset = false, diagnostics = 0;
+    f.context.sgs.debugShots = { save: () => { diagnostics++; return '/debug/report.png'; } };
+    f.vision.hasText = text => ['主线副本', '排行榜', '扫荡', '重置副本'].includes(text);
+    f.vision.ocrRect = region => {
+        if (region === f.task.ATTEMPT_REGION) return '次数 ' + (reset ? 5 : attempts) + '/5';
+        if (rewardText && region === f.task.REPORT_SUM_REGION) return rewardText;
+        return '';
+    };
+    Object.defineProperty(f, 'diagnostics', { get: () => diagnostics });
     f.task._waitPanel = () => true;
     f.task._waitReport = () => 'report';
     f.task._panelOpen = () => false;
@@ -186,7 +193,7 @@ function zhuxian(attempts, totalSeen) {
     return f;
 }
 test('zhuxian: options.allowReset=false overrides object true at zero attempts', () => {
-    const f = zhuxian(0, true);
+    const f = zhuxian(0, '总计获得');
     assert.strictEqual(f.task.allowReset, true);
     const r = f.task.run({ allowReset: false });
     result(r, 'skipped');
@@ -198,11 +205,11 @@ test('zhuxian: options.allowReset=false overrides object true at zero attempts',
     assert.strictEqual(pointCount(f, f.task.SWEEP_BTN), 0);
     assert.strictEqual(pointCount(f, f.task.RESET_CONFIRM), 0);
 });
-for (const totalSeen of [true, false]) {
-    test('zhuxian: existing attempts with total report evidence=' + totalSeen, () => {
-        const f = zhuxian(3, totalSeen);
+for (const rewardText of ['总计获得', '累计获得', '共获得', '']) {
+    test('zhuxian: existing attempts with report evidence=' + JSON.stringify(rewardText), () => {
+        const f = zhuxian(3, rewardText);
         const r = f.task.run({ allowReset: false });
-        result(r, totalSeen ? 'success' : 'unconfirmed');
+        result(r, rewardText ? 'success' : 'unconfirmed');
         assert.strictEqual(r.swept, 3);
         assert.strictEqual(r.attemptsBefore, 3);
         assert.strictEqual(r.reset, false);
@@ -210,9 +217,29 @@ for (const totalSeen of [true, false]) {
         assert.strictEqual(pointCount(f, f.task.RESET_CONFIRM), 0);
     });
 }
+test('zhuxian: recognizes shifted reward text in wide or body regions without accepting unrelated text', () => {
+    for (const [region, keyword] of [
+        ['REPORT_SUM_WIDE_REGION', '累计获得'],
+        ['REPORT_BODY_REGION', '共获得']
+    ]) {
+        const f = zhuxian(3, '');
+        f.vision.ocrRect = r => r === f.task.ATTEMPT_REGION ? '次数 3/5' : r === f.task[region] ? keyword : '';
+        const r = f.task.run({ allowReset: false });
+        result(r, 'success');
+    }
+    const f = zhuxian(3, '');
+    f.vision.ocrRect = r => r === f.task.ATTEMPT_REGION ? '次数 3/5' : r === f.task.REPORT_BODY_REGION ? '战报奖励' : '';
+    result(f.task.run({ allowReset: false }), 'unconfirmed');
+});
+test('zhuxian: unconfirmed report saves one diagnostic frame and preserves OCR evidence', () => {
+    const f = zhuxian(3, '');
+    const r = f.task.run({ allowReset: false });
+    assert.strictEqual(f.diagnostics, 1);
+    assert.match(r.message, /收益汇总未确认/);
+});
 for (const target of ['reset-button', 'reset-confirm', 'sweep']) {
     test('zhuxian: cancellation immediately before ' + target, () => {
-        const f = zhuxian(target === 'sweep' ? 3 : 0, true);
+        const f = zhuxian(target === 'sweep' ? 3 : 0, '总计获得');
         let cancel = false;
         const ocr = f.vision.ocrRect;
         f.vision.ocrRect = region => {
