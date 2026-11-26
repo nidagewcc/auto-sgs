@@ -83,16 +83,23 @@ sgs.pushLog = function () {
 };
 
 sgs.pushShot = function () {
-    if (!sgs.PC || pushFail >= 3) return;
+    sgs.lastShotError = "";
+    if (!sgs.PC) { sgs.lastShotError = "未配置电脑端地址，截图没有回传"; return false; }
+    if (pushFail >= 3) { sgs.lastShotError = "电脑端连续连接失败，截图没有回传"; return false; }
     try {
         var im = sgs.vision ? sgs.vision.frame(true) : null;
-        if (!im) return;
+        if (!im) { sgs.lastShotError = "未取得截图"; return false; }
         var b64 = images.toBase64(im, "jpg", 55);
-        http.post(sgs.PC + "/shot", b64, { timeout: 180000 });
+        var response = http.post(sgs.PC + "/shot", b64, { timeout: 180000 });
+        if (response && response.statusCode >= 200 && response.statusCode < 300) return true;
+        pushFail++;
+        sgs.lastShotError = "截图服务返回 HTTP " + (response ? response.statusCode : "未知");
     } catch (e) {
         pushFail++;
+        sgs.lastShotError = "截图回传失败：" + e;
         if (pushFail === 1) sgs.log.w("截图回传不可用（电脑端服务不可达）");
     }
+    return false;
 };
 
 
@@ -861,7 +868,11 @@ sgs.tasks.playerinfo = {
 
     SAMPLES: 3,
 
-    run: function () {
+    run: function (options) {
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
+        check();
+        progress("读取信息", "采集 3 帧并核对 7 个字段");
         var v = sgs.vision;
         var roi = sgs.ROI.playerInfo;
         var out = {};
@@ -879,8 +890,11 @@ sgs.tasks.playerinfo = {
         var img = imgs[0];
         sgs.log.i("画面 " + img.getWidth() + "x" + img.getHeight() + " / 取帧 " + imgs.length);
 
+        var labels = { nickname: "昵称", level: "等级", combat_power: "战力", physical: "体力", energy: "精力", sycee: "元宝", jade: "玉石" };
         for (var i = 0; i < this.FIELDS.length; i++) {
+            check();
             var fd = this.FIELDS[i];
+            progress("读取信息", "正在核对 " + (i + 1) + "/7 · " + labels[fd.key]);
             var rect = roi[fd.key];
             var tries = this.UNSTABLE[fd.key] ? imgs.length : 1;
             var raws = [];
@@ -1013,7 +1027,9 @@ sgs.tasks.mail = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         check();
+        progress("打开邮件", "寻找邮件入口并确认弹窗");
 
         // 1) 打开邮件弹窗
         var opened = false;
@@ -1034,6 +1050,7 @@ sgs.tasks.mail = {
         //    无可领邮件时按钮不消失、点了没反应，所以不拿按钮消失当判据。
         //    但第一轮必须真的识别到按钮：识别不到说明模板失配或弹窗没开成，
         //    继续静默走完会给出一个假的「已领取」结论，宁可直接报错。
+        progress("领取邮件", "点击全部领取，核对奖励或无可领取状态");
         var rewardSeen = false, emptySeen = false;
         for (var ci = 1; ci <= 2; ci++) {
             check();
@@ -1055,6 +1072,7 @@ sgs.tasks.mail = {
             sleep(600);
         }
 
+        progress("返回主城", "关闭邮件窗口并复检主城");
         // 3) 关闭弹窗，确认回主城
         var cp = v.find(this.CLOSE, 0.8, this.CLOSE_REGION, v.frame(true));
         sgs.log.i("关闭按钮命中 " + (cp ? (cp.x + "," + cp.y) : "无"));
@@ -1273,7 +1291,9 @@ sgs.tasks.xiaoqiao = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         check();
+        progress("打开助手", "识别小乔头像与日常功能");
         this._openPanel();
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
@@ -1284,18 +1304,22 @@ sgs.tasks.xiaoqiao = {
         sgs.log.i("已点击「开启」(" + btn.x + "," + btn.y + ")，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
 
+        progress("等待完成", "已点击开启，等待整套日常结束");
         var deadline = new Date().getTime() + this.RUN_TIMEOUT;
         var againConfirmed = false;
         while (new Date().getTime() < deadline) {
             check();
+            progress("等待完成", "等待完成标志，剩余等待上限 " + Math.max(0, Math.ceil((deadline - new Date().getTime()) / 1000)) + " 秒");
             if (this._findReward()) {
                 sgs.log.i("识别到奖励弹窗，整套日常状态待确认");
+                progress("核对结果", "已见奖励弹窗，继续核对整套完成并回城");
                 var completionSeen = this._closeResult();
                 return { status: completionSeen ? "success" : "unconfirmed",
                     message: completionSeen ? "已确认执行完成并返回主城" : "已关闭奖励弹窗，但整套日常完成状态未确认" };
             }
             if (this._done()) {
                 sgs.log.i("识别到「执行完成」绿条");
+                progress("返回主城", "已见执行完成标志，关闭助手并回城");
                 this._closeResult();
                 return { status: "success", message: "已识别执行完成标志并返回主城" };
             }
@@ -1455,7 +1479,9 @@ sgs.tasks.junqing = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         check();
+        progress("打开军情", "查找可用入口，尚未发起挑战");
         if (!this._openPanel()) {
             sgs.log.i("未出现可用军情入口，未发起挑战");
             return { status: "skipped", message: "未出现可用军情入口，未发起挑战" };
@@ -1469,6 +1495,7 @@ sgs.tasks.junqing = {
         v.clickPointAt(challenge.x, challenge.y);
         sgs.log.i("点击「一键挑战」");
 
+        progress("核对挑战", "已发起一键挑战，等待奖励并确认击杀数");
         var gotReward = this._dismissReward();
         if (gotReward) sgs.log.i("奖励浮层已关闭");
 
@@ -1481,6 +1508,7 @@ sgs.tasks.junqing = {
             sgs.log.w("只识别到 " + done + " 个「已击杀」，其余可能是识别误差或未解锁");
         }
 
+        progress("返回主城", "已识别击杀 " + done + "/" + this.DONE_REGIONS.length + "，关闭面板");
         // 关面板回主城
         var closed = false;
         for (var c = 1; c <= 3; c++) {
@@ -1592,10 +1620,12 @@ sgs.tasks.zhuxian = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         var allowReset = options && typeof options.allowReset === "boolean" ? options.allowReset : this.allowReset;
         var summary = { reset: false, attemptsBefore: -1, swept: 0 };
         check();
 
+        progress("打开副本", "进入征战、最新回与 BOSS 面板");
         // 1) 主城 → 征战 → 副本地图
         check();
         v.clickPointAt(this.ENTER_ZHENGZHAN[0], this.ENTER_ZHENGZHAN[1]);
@@ -1669,6 +1699,7 @@ sgs.tasks.zhuxian = {
             sgs.log.i("[zhuxian] 重置后次数 " + attempts + "/5");
         }
 
+        progress("准备扫荡", "挑战次数 " + attempts + "/5" + (summary.reset ? "，已重置 20 元宝" : "，未重置"));
         // 6) 确认按钮当前是「扫荡N次」（不是重置/挑战），识别到才点
         if (!v.hasText("扫荡", this.SWEEP_REGION)) {
             throw new Error("未识别到扫荡按钮（可能关卡未三星或界面异常），不做盲点");
@@ -1678,19 +1709,22 @@ sgs.tasks.zhuxian = {
         sgs.log.i("[zhuxian] 已点击扫荡（" + attempts + " 次，预计耗体力 " + (attempts * 5) + "）");
 
         // 7) 等战报
+        progress("等待战报", "已点击扫荡 " + attempts + " 次，等待结果证据");
         var r = this._waitReport(15);
         if (r === "no_stamina") throw new Error("体力不足，扫荡被拒绝");
         if (r === "timeout") throw new Error("未出现扫荡战报，扫荡结果未知");
         summary.swept = attempts;
         var totalSeen = v.hasText("总计获得", this.REPORT_SUM_REGION);
         summary.status = totalSeen ? "success" : "unconfirmed";
-        summary.message = totalSeen ? "已确认扫荡战报和总计获得" : "已见扫荡战报，但总计获得未确认";
+        summary.message = "已扫荡 " + attempts + " 次" + (summary.reset ? "，已重置 20 元宝" : "，未重置")
+            + (totalSeen ? "，战报与总计获得已确认" : "，已见战报但收益未确认");
         if (totalSeen) {
             sgs.log.i("[zhuxian] 战报确认：扫荡战报 + 总计获得，共扫荡 " + attempts + " 次");
         } else {
             sgs.log.w("[zhuxian] 已见扫荡战报，但未读到「总计获得」，请人工回看截图");
         }
 
+        progress("返回主城", summary.message + "，正在关闭战报与面板");
         // 8) 关战报（蓝 X），确认战报消失
         check();
         v.clickPointAt(this.BLUE_X[0], this.BLUE_X[1]);
@@ -2042,6 +2076,7 @@ sgs.daily = {
             var item = report.items[i], taskStarted = false;
             try {
                 this._check(options);
+                if (options.onTaskProgress) options.onTaskProgress(i + 1, report.items.length, item, "确认主城", "检查页面，尚未开始本项操作");
                 if (!sgs.dailyRecovery.ensureHome(previous, cancelled, i === 0)) {
                     report.aborted = true;
                     report.error = "未确认可操作主城，停止后续任务";
@@ -2055,7 +2090,13 @@ sgs.daily = {
                 var task = sgs.tasks[item.id];
                 if (!task || typeof task.run !== "function") throw new Error("任务模块不存在 " + item.id);
                 taskStarted = true;
-                var taskOptions = { checkCancelled: function () { self._check(options); } };
+                var taskOptions = {
+                    checkCancelled: function () { self._check(options); },
+                    onProgress: function (phase, detail) {
+                        self._check(options);
+                        if (options.onTaskProgress) options.onTaskProgress(i + 1, report.items.length, item, phase, detail);
+                    }
+                };
                 if (item.id === "zhuxian") taskOptions.allowReset = false;
                 var raw = task.run(taskOptions);
                 this._check(options);
@@ -2086,6 +2127,7 @@ sgs.daily = {
             previous = item.id;
             try {
                 this._check(options);
+                if (options.onTaskProgress) options.onTaskProgress(i + 1, report.items.length, item, "恢复主城", "核对任务结束页面，无法确认则停止后续步骤");
                 var home = sgs.dailyRecovery.ensureHome(item.id, cancelled, false);
                 this._check(options);
                 item.homeRecovered = home;
@@ -2126,6 +2168,138 @@ sgs.daily = {
 };
 
 
+// ===== src/task-status.js =====
+
+// Rhino ES5 task state only: no game calls and no storage access until first use.
+sgs = (typeof sgs === "undefined") ? {} : sgs;
+sgs.taskStatus = (function () {
+    var FILE = "/sdcard/Download/autosgs-logs/task-status.json";
+    var loaded = false, active = null, records = [], owner = null, serial = 0;
+    // One reentrant lock protects state checks, mutation, and the shared .tmp write.
+    // Host VM tests may have no java.util; Android workers share this Java lock.
+    var lock = null;
+    try {
+        if (typeof java !== "undefined" && java.util && java.util.concurrent && java.util.concurrent.locks && java.util.concurrent.locks.ReentrantLock) lock = new java.util.concurrent.locks.ReentrantLock();
+    } catch (noJavaLock) {}
+    function synchronized(operation) {
+        return function () {
+            if (lock) lock.lock();
+            try { return operation.apply(this, arguments); }
+            finally { if (lock) lock.unlock(); }
+        };
+    }
+    var names = { running: "运行中", finishing: "收尾中", stopping: "正在停止", success: "成功", skipped: "已跳过", unconfirmed: "待确认", failed: "失败", stopped: "已停止" };
+    var phases = { starting: "开始任务", running: "执行中", preparing: "准备中", recovery: "恢复主城", finishing: "收尾中", stopping: "正在停止" };
+    function now() { return new Date().getTime(); }
+    function clone(value) { return JSON.parse(JSON.stringify(value)); }
+    function terminal(status) { return status === "success" || status === "skipped" || status === "unconfirmed" || status === "failed" || status === "stopped"; }
+    function warn(error) { try { if (sgs.log && sgs.log.w) sgs.log.w("任务状态存储失败 " + error); } catch (ignored) {} }
+    function storage() {
+        try { return typeof files !== "undefined" && files && typeof java !== "undefined" && java && java.io && java.io.File && typeof files.exists === "function" && typeof files.read === "function" && typeof files.write === "function" && typeof files.ensureDir === "function"; }
+        catch (e) { return false; }
+    }
+    function guard() {
+        var expected = FILE.replace("/sdcard/", "/storage/emulated/0/");
+        if (String(new java.io.File(FILE).getCanonicalPath()) !== expected || String(new java.io.File(FILE + ".tmp").getCanonicalPath()) !== expected + ".tmp") throw new Error("任务状态文件路径异常");
+    }
+    function snapshot(record) {
+        if (!record) return null;
+        var copy = clone(record);
+        if (!terminal(copy.status)) copy.durationMs = Math.max(0, now() - copy.startedAt);
+        return copy;
+    }
+    function save() {
+        if (!storage()) return;
+        try {
+            guard();
+            files.ensureDir("/sdcard/Download/autosgs-logs/");
+            guard();
+            files.write(FILE + ".tmp", JSON.stringify({ version: 1, active: snapshot(active), history: records }, null, 2));
+            guard();
+            if (!new java.io.File(FILE + ".tmp").renameTo(new java.io.File(FILE))) throw new Error("任务状态保存失败，保留原文件");
+        } catch (e) { warn(e); }
+    }
+    function number(value) { return typeof value === "number" && isFinite(value) && value >= 0; }
+    function parseRecord(value, isActive) {
+        if (!value || typeof value.runId !== "string" || !value.runId || typeof value.id !== "string" || typeof value.label !== "string" || typeof value.phase !== "string" || typeof value.message !== "string" || !number(value.startedAt) || !number(value.updatedAt) || !number(value.durationMs) || Object.prototype.toString.call(value.items) !== "[object Array]" || (isActive ? (value.status !== "running" && value.status !== "finishing" && value.status !== "stopping") || value.endedAt !== null : !terminal(value.status) || !number(value.endedAt))) throw new Error("任务状态记录损坏");
+        return { runId: value.runId, id: value.id, label: value.label, status: value.status, phase: value.phase, message: value.message, startedAt: value.startedAt, updatedAt: value.updatedAt, endedAt: value.endedAt, durationMs: value.durationMs, items: clone(value.items) };
+    }
+    function load() {
+        if (loaded) return;
+        loaded = true;
+        if (!storage()) return;
+        try {
+            guard();
+            if (!files.exists(FILE)) return;
+            var data = JSON.parse(String(files.read(FILE))), next = [], seen = {}, i;
+            if (!data || data.version !== 1 || Object.prototype.toString.call(data.history) !== "[object Array]" || !(data.active === null || (data.active && typeof data.active === "object"))) throw new Error("任务状态配置损坏");
+            for (i = 0; i < data.history.length; i++) {
+                var record = parseRecord(data.history[i], false);
+                if (!seen["$" + record.runId]) { next.push(record); seen["$" + record.runId] = true; }
+            }
+            var interrupted = data.active === null ? null : parseRecord(data.active, true);
+            records = next.slice(0, 20);
+            if (interrupted) {
+                interrupted.status = "unconfirmed";
+                interrupted.message = "上次运行没有结束记录，结果未确认";
+                interrupted.endedAt = Math.max(now(), interrupted.updatedAt, interrupted.startedAt);
+                interrupted.updatedAt = interrupted.endedAt;
+                interrupted.durationMs = Math.max(0, interrupted.endedAt - interrupted.startedAt);
+                records = [interrupted].concat(records.filter(function (r) { return r.runId !== interrupted.runId; })).slice(0, 20);
+                save();
+            }
+        } catch (e) { records = []; active = null; warn(e); }
+    }
+    function owns(token) { return active && token !== null && typeof token !== "undefined" && token === owner; }
+    function update(token, status, phase, detail) {
+        load();
+        if (!owns(token) || active.status === "stopping") return false;
+        active.status = status; active.phase = phase;
+        if (typeof detail !== "undefined") active.message = String(detail === null ? "" : detail);
+        active.updatedAt = now(); save(); return true;
+    }
+    var api = {
+        begin: function (token, task) {
+            load();
+            if (token === null || typeof token === "undefined" || !task || typeof task.id !== "string" || typeof task.label !== "string") return false;
+            var time = now();
+            owner = token;
+            active = { runId: String(time) + "-" + (++serial), id: task.id, label: task.label, status: "running", phase: "starting", message: "", startedAt: time, updatedAt: time, endedAt: null, durationMs: 0, items: [] };
+            // Avoid collisions with loaded history when a host clock has not advanced.
+            while (records.some(function (r) { return r.runId === active.runId; })) active.runId = String(time) + "-" + (++serial);
+            save(); return snapshot(active);
+        },
+        step: function (token, phase, detail) { return update(token, "running", String(phase || "running"), detail); },
+        finishing: function (token, detail) { return update(token, "finishing", "finishing", detail); },
+        stopping: function (token) { return update(token, "stopping", "stopping", "用户请求停止"); },
+        finish: function (token, status, message, items) {
+            load();
+            if (!owns(token) || !terminal(status)) return false;
+            if (active.status === "stopping" && status !== "stopped") return false;
+            var copied;
+            try { copied = typeof items === "undefined" ? active.items : clone(items); } catch (e) { return false; }
+            if (Object.prototype.toString.call(copied) !== "[object Array]") return false;
+            active.status = status; active.message = String(message || ""); active.items = copied;
+            active.endedAt = Math.max(now(), active.startedAt); active.updatedAt = active.endedAt;
+            active.durationMs = active.endedAt - active.startedAt;
+            records.unshift(active); records = records.slice(0, 20); active = null; owner = null;
+            save(); return snapshot(records[0]);
+        },
+        current: function () { load(); return snapshot(active || records[0]); },
+        history: function () { load(); return clone(records); },
+        title: function (record) { record = record || this.current(); return record ? (names[record.status] || "未确认") + "·" + record.label : "暂无任务"; },
+        detail: function (record) {
+            record = record || this.current();
+            if (!record) return "暂无执行记录";
+            var duration = terminal(record.status) ? record.durationMs : Math.max(0, now() - record.startedAt);
+            return (record.message || phases[record.phase] || record.phase || names[record.status] || "未确认") + " · 总耗时 " + (duration / 1000).toFixed(1) + " 秒";
+        }
+    };
+    for (var method in api) if (Object.prototype.hasOwnProperty.call(api, method)) api[method] = synchronized(api[method]);
+    return api;
+}());
+
+
 // ===== src/ui.js =====
 
 // ui.js —— 悬浮球 / 快捷圆盘 / 完整面板
@@ -2139,7 +2313,8 @@ sgs.ui = {
     ballView: null, ballLp: null,
     _views: [], _disposed: false,
     dockView: null,
-    panelView: null, dailySettingsView: null, _statusTv: null, _logTv: null,
+    panelView: null, dailySettingsView: null, statusBadgeView: null, resultsView: null,
+    _statusTv: null, _logTv: null, _taskStatusTv: null, _statusTick: null,
 
     _thread: null, _t0: 0, _tick: null, _lastResult: "", _token: null,
 
@@ -2249,7 +2424,7 @@ sgs.ui = {
                     var lp = view.getLayoutParams();
                     if (!lp || lp.type != android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) continue;
                     var tag = String(view.getTag());
-                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel" || tag === "auto-sgs:daily-settings";
+                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel" || tag === "auto-sgs:daily-settings" || tag === "auto-sgs:status" || tag === "auto-sgs:results";
                     // 兼容旧版无标签的球：同时匹配类型、文字、尺寸、背景形状及颜色。
                     if (!owned && view instanceof android.widget.TextView && String(view.getText()) === "三"
                         && lp.width === self.px(54) && lp.height === self.px(54)) {
@@ -2277,9 +2452,12 @@ sgs.ui = {
     dispose: function () {
         this._disposed = true;
         this._stopTick();
+        if (this._statusTick) { try { clearInterval(this._statusTick); } catch (e) { } this._statusTick = null; }
+        if (sgs.statusUI) sgs.statusUI.stop();
         this.ballView = null; this.ballLp = null;
         this.dockView = null; this.panelView = null; this.dailySettingsView = null;
-        this._statusTv = null; this._logTv = null;
+        this._statusTv = null; this._logTv = null; this._taskStatusTv = null;
+        this.statusBadgeView = null; this.resultsView = null;
         var self = this;
         this._onMainSync(function () {
             var views = self._views.slice();
@@ -2392,6 +2570,7 @@ sgs.ui = {
                 } else if (act == 1 || act == 3) {
                     v.setAlpha(1.0);
                     if (!moved) {
+                        if (self.isBusy()) { self.stopAll(); return true; }
                         var held = new Date().getTime() - tDown;
                         if (held > 480) { self.hideDock(); self.showPanel(); }
                         else { self.toggleDock(); }
@@ -2404,6 +2583,7 @@ sgs.ui = {
 
         this.ballView = tv;
         this._attachWindow(tv, lp, "ball", "ballView");
+        this._startStatusTick();
         sgs.log.i("悬浮球已显示");
     },
 
@@ -2421,6 +2601,7 @@ sgs.ui = {
         var self = this;
         this._post(function () {
             try {
+                v.setText(busy ? "停" : "三");
                 v.setBackground(self._shape(busy ? self.C.ballOn : self.C.bg, busy ? self.C.busy : self.C.gold, 1.5, -1));
             } catch (e) { }
         });
@@ -2439,6 +2620,7 @@ sgs.ui = {
     },
 
     showDock: function () {
+        if (this.isBusy()) { toast("任务执行中，点悬浮球「停」可停止"); return; }
         if (this._disposed) return;
         if (!this._ctx) this._init();
         var self = this;
@@ -2535,6 +2717,7 @@ sgs.ui = {
 
     // ---------------- 完整面板（长按球）----------------
     showPanel: function () {
+        if (this.isBusy()) { toast("任务执行中，请看底部状态；点「停」可停止"); return; }
         if (this._disposed) return;
         if (!this._ctx) this._init();
         var self = this;
@@ -2581,6 +2764,16 @@ sgs.ui = {
         this._margins(line, 0, 8, 0, 2);
         root.addView(line);
 
+        if (sgs.taskStatus) {
+            this._taskStatusTv = this._tv(sgs.taskStatus.title() + "\n" + sgs.taskStatus.detail(), 11, this.C.text, false);
+            this._taskStatusTv.setPadding(0, this.px(8), 0, this.px(8));
+            root.addView(this._taskStatusTv);
+            var records = this._tv("执行状态与最近记录 ›", 12, this.C.gold, true);
+            records.setPadding(0, this.px(8), 0, this.px(8));
+            records.setClickable(true);
+            records.setOnClickListener(new android.view.View.OnClickListener({ onClick: function () { self.showTaskResults(); } }));
+            root.addView(records);
+        }
         if (sgs.dailyUI) {
             var settings = this._tv("日常设置 · 勾选与排序 ›", 12, this.C.gold, true);
             settings.setPadding(0, this.px(10), 0, this.px(10));
@@ -2641,7 +2834,7 @@ sgs.ui = {
         if (!v) return;
         this.panelView = null;
         this._statusTv = null;
-        this._logTv = null;
+        this._logTv = null; this._taskStatusTv = null;
         this._removeWindow(v);
     },
 
@@ -2715,6 +2908,9 @@ sgs.ui = {
     },
 
     _refresh: function () {
+        if (this._taskStatusTv && sgs.taskStatus) {
+            try { this._taskStatusTv.setText(sgs.taskStatus.title() + "\n" + sgs.taskStatus.detail()); } catch (e) { }
+        }
         var busy = this.isBusy();
         if (this._statusTv) {
             try {
@@ -2725,6 +2921,34 @@ sgs.ui = {
         if (this._logTv) {
             try { this._logTv.setText(this._tailLog()); } catch (e) { }
         }
+    },
+
+    // 状态条的刷新不依赖完整面板是否展开。
+    _startStatusTick: function () {
+        if (!sgs.statusUI || !sgs.taskStatus || this._statusTick) return;
+        var self = this;
+        this._statusTick = setInterval(function () {
+            if (!self._disposed) { sgs.statusUI.refresh(); self._post(function () { self._refresh(); }); }
+        }, 900);
+        sgs.statusUI.refresh();
+    },
+    _beginStatus: function (token, id, label) {
+        if (!sgs.taskStatus) return;
+        sgs.taskStatus.begin(token, { id: id, label: label || id });
+        this._startStatusTick();
+        if (sgs.statusUI) sgs.statusUI.refresh();
+    },
+    _stepStatus: function (token, phase, detail) {
+        if (sgs.taskStatus) sgs.taskStatus.step(token, phase, detail);
+        if (sgs.statusUI) sgs.statusUI.refresh();
+    },
+    _finishStatus: function (token, status, message, items) {
+        if (sgs.taskStatus) sgs.taskStatus.finish(token, status, message, items);
+        if (sgs.statusUI) sgs.statusUI.refresh();
+    },
+    showTaskResults: function () {
+        if (this.isBusy()) { toast("任务执行中，请看底部状态；点悬浮球「停」可停止"); return; }
+        if (sgs.statusUI) sgs.statusUI.showResults();
     },
 
     // ---------------- 执行 ----------------
@@ -2748,17 +2972,23 @@ sgs.ui = {
         this._paintBall(true);
         var token = {};
         this._token = token;
+        this._beginStatus(token, id, label || id);
+        if (sgs.statusUI) sgs.statusUI.hideResults();
         this._thread = threads.start(function () {
             var t0 = new Date().getTime();
+            var outcome = { status: "failed", message: "任务没有完成" };
             try {
                 sgs.log.i("=== 开始 " + label + " ===");
                 if (id === "shot") {
-                    sgs.pushShot();
-                    sgs.log.i("=== 截屏已回传 ===");
-                    toast("截图已上传");
-                    self._lastResult = "截图 " + Math.round((new Date().getTime() - t0) / 1000) + "s ✓";
+                    self._stepStatus(token, "截图回传", "正在截图并检查回传结果");
+                    var sent = sgs.pushShot();
+                    outcome = sent === true ? { status: "success", message: "截图已回传" }
+                        : { status: "failed", message: sgs.lastShotError || "截图未回传，请检查电脑端地址和连接" };
+                    toast(outcome.message);
+                    self._lastResult = outcome.message;
                     return;
                 }
+                self._stepStatus(token, "确认主城", "检查当前主城，不自动登录或切号");
                 if (!sgs.dailyRecovery.ensureHome(null, function () { return self._token !== token; }, false)) {
                     throw new Error("未确认主城，请先手动登录；不会自动登录或切号");
                 }
@@ -2766,8 +2996,15 @@ sgs.ui = {
                 if (!task) throw new Error("任务不存在 " + id);
                 var result = task.run({ checkCancelled: function () {
                     if (self._token !== token) { var e = new Error("任务已停止"); e.cancelled = true; throw e; }
+                }, onProgress: function (phase, detail) {
+                    if (self._token === token) self._stepStatus(token, phase, phase + " · " + detail);
                 } });
+                self._stepStatus(token, "核对主城", "操作结束，复检主城后确定最终结果");
                 var state = sgs.daily._result(id, result);
+                if (!sgs.dailyRecovery.ensureHome(id, function () { return self._token !== token; }, false)) {
+                    state = { status: "failed", message: state.message + "；操作后未确认回到主城" };
+                }
+                outcome = state;
                 var names = { success: "成功", skipped: "跳过", unconfirmed: "待确认", failed: "失败" };
                 var cost = Math.round((new Date().getTime() - t0) / 1000);
                 sgs.log.i("=== " + label + " " + names[state.status] + " " + cost + "s：" + state.message + " ===");
@@ -2776,11 +3013,15 @@ sgs.ui = {
                     self._lastResult = label + " " + names[state.status] + " " + cost + "s";
                 }
             } catch (e) {
+                outcome = { status: "failed", message: String(e) };
                 sgs.log.e("任务异常: " + e + " || stack=" + (e && e.stack ? e.stack : "-"));
-                if (self._token === token) { toast("异常: " + e); self._lastResult = "上次失败 ✗"; }
+                if (self._token === token) { toast("异常: " + e); self._lastResult = label + "失败 · " + e; }
             } finally {
+                if (sgs.taskStatus) sgs.taskStatus.finishing(token, "结果已记录，正在收尾");
                 try { if (id !== "shot" && sgs.pushShot) sgs.pushShot(); } catch (e2) { }
                 try { sgs.pushLog(); } catch (e3) { }
+                self._finishStatus(token, self._token === token ? outcome.status : "stopped",
+                    self._token === token ? outcome.message : "用户停止；最后状态：" + outcome.message);
                 // 回传也属于本线程；完成后才释放互斥。
                 if (self._token === token) {
                     self._t0 = 0;
@@ -2802,8 +3043,12 @@ sgs.ui = {
         this._paintBall(true);
         var token = {};
         this._token = token;
+        this._beginStatus(token, "daily", label || "一键日常");
+        if (sgs.statusUI) sgs.statusUI.hideResults();
         this._thread = threads.start(function () {
+            var terminal = "failed", message = "日常没有完成", items = [];
             try {
+                self._stepStatus(token, "确认主城", "检查日常方案与手动主城");
                 sgs.log.i("=== 开始 " + (label || "一键日常") + "：" + sgs.daily.planLabel(planOverride) + " ===");
                 var report = sgs.daily.run({
                     plan: planOverride,
@@ -2811,19 +3056,31 @@ sgs.ui = {
                     onProgress: function (index, total, item) {
                         if (self._token !== token) return;
                         self._lastResult = "日常 " + index + "/" + total + " · " + item.name;
+                        self._stepStatus(token, "日常执行", index + "/" + total + " · " + item.name + "开始");
                         self._post(function () { self._refresh(); });
+                    },
+                    onTaskProgress: function (index, total, item, phase, detail) {
+                        if (self._token === token) self._stepStatus(token, phase, index + "/" + total + " " + item.name + " · " + phase + " · " + detail);
                     }
                 });
                 self._dailyReport = report;
                 var msg = sgs.daily.formatReport(report);
+                items = report.items;
+                message = msg + (report.error ? "；" + report.error : "");
+                terminal = report.status === "success" ? "success" : report.status === "empty" ? "skipped"
+                    : report.status === "cancelled" ? "stopped" : report.counts.unconfirmed ? "unconfirmed" : "failed";
                 sgs.log.i("=== 一键日常 " + msg + (report.error ? "；" + report.error : "") + " ===");
                 if (self._token === token) { toast(msg); self._lastResult = "日常 " + msg; }
             } catch (e) {
+                message = String(e);
                 sgs.log.e("一键日常异常: " + e);
-                if (self._token === token) { toast("日常未完成：" + e); self._lastResult = "日常失败 · 请查看日志"; }
+                if (self._token === token) { toast("日常未完成：" + e); self._lastResult = "日常失败 · " + e; }
             } finally {
+                if (sgs.taskStatus) sgs.taskStatus.finishing(token, "日常结果已记录，正在收尾");
                 try { if (sgs.pushShot) sgs.pushShot(); } catch (e4) { }
                 try { sgs.pushLog(); } catch (e5) { }
+                self._finishStatus(token, self._token === token ? terminal : "stopped",
+                    self._token === token ? message : "用户停止；" + message, items);
                 if (self._token === token) {
                     self._t0 = 0;
                     self._thread = null;
@@ -2837,6 +3094,9 @@ sgs.ui = {
     stopAll: function () {
         var self = this;
         var th = this._thread;
+        var stoppedToken = this._token;
+        if (th && sgs.taskStatus) sgs.taskStatus.stopping(stoppedToken);
+        if (sgs.statusUI) sgs.statusUI.refresh();
         // 旧任务不能再清理状态；保留线程引用，直到它实际退出才解除互斥。
         this._token = null;
         this._t0 = 0;
@@ -2859,6 +3119,7 @@ sgs.ui = {
             }
             // 新任务可能在旧线程退出后已经启动，不能清除新任务的状态。
             if (self._thread !== th) return;
+            self._finishStatus(stoppedToken, "stopped", "用户已停止，任务线程已经退出");
             self._thread = null;
             self._lastResult = "已手动停止";
             self._paintBall(false);
@@ -3071,6 +3332,194 @@ sgs.dailyUI = {
     }
 };
 
+
+// ===== src/status-ui.js =====
+
+// status-ui.js —— 只展示任务模型；常驻刷新由 ui ticker 驱动。
+sgs = (typeof sgs === "undefined") ? {} : sgs;
+sgs.statusUI = {
+    _stopped: false, _badgeRequest: 0, _resultsRequest: 0,
+    _badgePending: false, _resultsPending: false, _refreshPending: false,
+    _badgeTitle: null, _badgeDetail: null, _currentTitle: null, _currentDetail: null, _stopButton: null,
+    _state: function (status) {
+        var ui = sgs.ui, s = String(status || "").toLowerCase();
+        if (s === "running" || s === "pending" || s === "started" || s === "stopping" || s === "finishing") return { text: "运行中", color: ui.C.busy };
+        if (s === "success" || s === "succeeded" || s === "completed" || s === "done") return { text: "成功", color: ui.C.ok };
+        if (s === "uncertain" || s === "unconfirmed" || s === "needs_confirmation" || s === "needs_confirm") return { text: "待确认", color: ui.C.gold };
+        if (s === "failed" || s === "failure" || s === "error") return { text: "失败", color: ui.C.danger };
+        if (s === "not_run") return { text: "未执行", color: ui.C.sub };
+        if (s === "skipped" || s === "skip") return { text: "已跳过", color: ui.C.sub };
+        if (s === "stopped" || s === "cancelled" || s === "canceled") return { text: "已停止", color: ui.C.sub };
+        return { text: "待确认", color: ui.C.gold };
+    },
+    _latest: function () {
+        var model = sgs.taskStatus, current = model.current(), history;
+        if (current) return current;
+        history = model.history() || [];
+        return history.length ? history[0] : null;
+    },
+    _title: function (record) { return String(sgs.taskStatus.title(record) || (record && (record.label || record.id)) || "暂无任务"); },
+    _detail: function (record) { return String(sgs.taskStatus.detail(record) || (record && record.message) || ""); },
+    _vertical: function (ui) {
+        var v = new android.widget.LinearLayout(ui._ctx);
+        v.setOrientation(android.widget.LinearLayout.VERTICAL);
+        v.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2));
+        return v;
+    },
+    showBadge: function () {
+        var self = this, ui = sgs.ui;
+        if (this._stopped || ui._disposed || ui.statusBadgeView || this._badgePending) return;
+        this._badgePending = true;
+        var request = ++this._badgeRequest;
+        ui._post(function () {
+            if (request !== self._badgeRequest) return;
+            self._badgePending = false;
+            if (self._stopped || ui._disposed || ui.statusBadgeView) return;
+            var record = self._latest();
+            if (!record) return;
+            var root = self._vertical(ui);
+            root.setPadding(ui.px(8), ui.px(3), ui.px(8), ui.px(3));
+            root.setBackground(ui._shape(ui.C.bg, ui.C.line, 1, 0));
+            self._badgeTitle = ui._tv("", 10, ui.C.text, false);
+            self._badgeDetail = ui._tv("", 10, ui.C.sub, false);
+            var lines = [self._badgeTitle, self._badgeDetail];
+            for (var i = 0; i < lines.length; i++) {
+                lines[i].setMaxLines(1);
+                lines[i].setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, 0, 1));
+                root.addView(lines[i]);
+            }
+            var lp = ui._lp(ui.px(220), ui.px(44), 0, ui.px(8), android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
+            lp.flags |= android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            // Android 12+ also checks overlay opacity before passing touches through.
+            lp.alpha = 0.7;
+            ui.statusBadgeView = root;
+            self._updateBadge(record);
+            ui._attachWindow(root, lp, "status", "statusBadgeView");
+        });
+    },
+    _updateBadge: function (record) {
+        if (!sgs.ui.statusBadgeView || !this._badgeTitle) return;
+        this._badgeTitle.setText(this._title(record) + " · " + this._duration(record));
+        this._badgeTitle.setTextColor(sgs.ui.hex(this._state(record.status).color));
+        this._badgeDetail.setText(this._detail(record));
+    },
+    refresh: function () {
+        var self = this, ui = sgs.ui;
+        if (this._stopped || ui._disposed || this._refreshPending) return;
+        this._refreshPending = true;
+        var badgeRequest = this._badgeRequest;
+        ui._post(function () {
+            self._refreshPending = false;
+            if (self._stopped || ui._disposed) return;
+            var record = self._latest();
+            if (record) {
+                if (ui.statusBadgeView) self._updateBadge(record);
+                else if (badgeRequest === self._badgeRequest) self.showBadge();
+            } else self.hideBadge();
+            if (ui.resultsView) self._updateCurrent();
+        });
+    },
+    _updateCurrent: function () {
+        var record = sgs.taskStatus.current(), latest = record || this._latest(), ui = sgs.ui;
+        if (!this._currentTitle || !ui.resultsView) return;
+        this._currentTitle.setText(latest ? this._title(latest) + " · " + this._state(latest.status).text : "当前空闲");
+        this._currentTitle.setTextColor(ui.hex(latest ? this._state(latest.status).color : ui.C.sub));
+        this._currentDetail.setText(latest ? this._detail(latest) : "尚无执行状态");
+        this._stopButton.setVisibility(record && this._state(record.status).text === "运行中" ? 0 : 8);
+    },
+    _time: function (value) {
+        if (value === null || typeof value === "undefined" || value === "") return "未知";
+        var date = new Date(value);
+        if (isNaN(date.getTime())) return String(value);
+        function pad(n) { return n < 10 ? "0" + n : String(n); }
+        return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+    },
+    _duration: function (record) {
+        var ms = record.durationMs;
+        if (ms === null || typeof ms === "undefined") ms = record.endedAt && record.startedAt ? new Date(record.endedAt).getTime() - new Date(record.startedAt).getTime() : null;
+        return ms === null || !isFinite(ms) ? "未知" : Math.max(0, Math.round(ms / 1000)) + "秒";
+    },
+    _resultsBusy: function (ui) {
+        if (typeof ui.isBusy !== "function" || !ui.isBusy()) return false;
+        toast("任务执行中，请看底部状态；点击悬浮球「停」可停止");
+        return true;
+    },
+    showResults: function () {
+        var self = this, ui = sgs.ui;
+        if (this._stopped || ui._disposed || ui.resultsView || this._resultsPending) return;
+        if (this._resultsBusy(ui)) return;
+        this._resultsPending = true;
+        var request = ++this._resultsRequest;
+        ui._post(function () {
+            if (request !== self._resultsRequest) return;
+            self._resultsPending = false;
+            if (self._stopped || ui._disposed || ui.resultsView) return;
+            if (self._resultsBusy(ui)) return;
+            ui.hideDock(); ui.hidePanel();
+            if (request !== self._resultsRequest || self._stopped || ui._disposed) return;
+            var root = self._vertical(ui);
+            root.setPadding(ui.px(10), ui.px(10), ui.px(10), ui.px(10));
+            root.setBackground(ui._shape(ui.C.bg, ui.C.goldDim, 1, 10));
+            function text(value, color) { var tv = ui._tv(value, 12, color || ui.C.text, false); tv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, -2)); return tv; }
+            function button(value, callback) {
+                var v = text(value, ui.C.gold);
+                v.setPadding(ui.px(4), ui.px(10), ui.px(4), ui.px(10));
+                v.setClickable(true);
+                v.setOnClickListener(new android.view.View.OnClickListener({ onClick: function () {
+                    if (!self._stopped && !ui._disposed && ui.resultsView === root) callback();
+                } }));
+                return v;
+            }
+            root.addView(ui._tv("执行状态与记录", 16, ui.C.gold, true));
+            root.addView(button("关闭", function () { self.hideResults(); }));
+            self._currentTitle = text(""); self._currentDetail = text("", ui.C.sub);
+            root.addView(self._currentTitle); root.addView(self._currentDetail);
+            self._stopButton = button("停止当前任务", function () {
+                var current = sgs.taskStatus.current();
+                if (current && self._state(current.status).text === "运行中") ui.stopAll();
+            });
+            root.addView(self._stopButton);
+            var scroll = new android.widget.ScrollView(ui._ctx), body = self._vertical(ui);
+            scroll.setLayoutParams(new android.widget.LinearLayout.LayoutParams(-1, 0, 1));
+            var history = sgs.taskStatus.history() || [];
+            if (!history.length) body.addView(text("尚无完成记录", ui.C.sub));
+            for (var i = 0; i < history.length; i++) {
+                var record = history[i], state = self._state(record.status);
+                body.addView(text((record.label || record.id || "任务") + " · " + state.text, state.color));
+                body.addView(text("开始：" + self._time(record.startedAt) + "\n耗时：" + self._duration(record) + "\n原因：" + (record.message || self._detail(record) || "无"), ui.C.sub));
+                var items = record.items || [];
+                for (var j = 0; j < items.length; j++) {
+                    var item = items[j], itemState = self._state(item.status);
+                    body.addView(text("  " + (item.name || item.label || item.id || "日常项目") + "：" + itemState.text + (item.message ? "\n  " + item.message : ""), itemState.color));
+                }
+            }
+            scroll.addView(body); root.addView(scroll);
+            var metrics = ui._ctx.getResources().getDisplayMetrics();
+            var height = Math.min(metrics.heightPixels - ui.px(32), ui.px(600));
+            var lp = ui._lp(ui.px(290), height, 0, 0, android.view.Gravity.CENTER);
+            ui.resultsView = root;
+            self._updateCurrent();
+            ui._attachWindow(root, lp, "results", "resultsView");
+        });
+    },
+    hideResults: function () {
+        ++this._resultsRequest; this._resultsPending = false;
+        var ui = sgs.ui, root = ui.resultsView;
+        ui.resultsView = null; this._currentTitle = null; this._currentDetail = null; this._stopButton = null;
+        if (root) ui._removeWindow(root);
+    },
+    hideBadge: function () {
+        ++this._badgeRequest; this._badgePending = false;
+        var ui = sgs.ui, root = ui.statusBadgeView;
+        ui.statusBadgeView = null; this._badgeTitle = null; this._badgeDetail = null;
+        if (root) ui._removeWindow(root);
+    },
+    stop: function () {
+        this._stopped = true;
+        this.hideResults(); this.hideBadge();
+    }
+};
+
 // ===== 启动（分步执行，每步单独 catch，便于定位）=====
 sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) + " ===");
 try { sgs.log.i(device.brand + " " + device.model + " / Android " + device.release); } catch (e0) { }
@@ -3161,6 +3610,14 @@ threads.start(function () {
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
                 }
+                if (__tid2 === "status:show") {
+                    sgs.ui.showTaskResults();
+                    continue;
+                }
+                if (__tid2 === "status:hide") {
+                    sgs.statusUI.hideResults();
+                    continue;
+                }
                 if (__tid2 === "daily:readonly") {
                     sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
                     continue;
@@ -3225,7 +3682,11 @@ threads.start(function () {
         var cmd = String(cr.body.string()).replace(/[ \r\n\t]+/g, "");
         if (cmd && cmd != "none") {
             sgs.log.i("[cmd] " + cmd);
-            if (cmd === "daily:readonly") {
+            if (cmd === "status:show") {
+                sgs.ui.showTaskResults();
+            } else if (cmd === "status:hide") {
+                sgs.statusUI.hideResults();
+            } else if (cmd === "daily:readonly") {
                 sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
             } else if (cmd === "daily:settings") {
                 sgs.dailyUI.show();

@@ -109,7 +109,9 @@ sgs.tasks.junqing = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         check();
+        progress("打开军情", "查找可用入口，尚未发起挑战");
         if (!this._openPanel()) {
             sgs.log.i("未出现可用军情入口，未发起挑战");
             return { status: "skipped", message: "未出现可用军情入口，未发起挑战" };
@@ -123,6 +125,7 @@ sgs.tasks.junqing = {
         v.clickPointAt(challenge.x, challenge.y);
         sgs.log.i("点击「一键挑战」");
 
+        progress("核对挑战", "已发起一键挑战，等待奖励并确认击杀数");
         var gotReward = this._dismissReward();
         if (gotReward) sgs.log.i("奖励浮层已关闭");
 
@@ -135,6 +138,7 @@ sgs.tasks.junqing = {
             sgs.log.w("只识别到 " + done + " 个「已击杀」，其余可能是识别误差或未解锁");
         }
 
+        progress("返回主城", "已识别击杀 " + done + "/" + this.DONE_REGIONS.length + "，关闭面板");
         // 关面板回主城
         var closed = false;
         for (var c = 1; c <= 3; c++) {

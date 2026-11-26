@@ -184,7 +184,9 @@ sgs.tasks.xiaoqiao = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         check();
+        progress("打开助手", "识别小乔头像与日常功能");
         this._openPanel();
         var btn = this._openDailyTab();
         sgs.log.i("「日常功能」页就绪");
@@ -195,18 +197,22 @@ sgs.tasks.xiaoqiao = {
         sgs.log.i("已点击「开启」(" + btn.x + "," + btn.y + ")，每 " + (this.POLL_MS / 1000) + " 秒轮询，超时 " +
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
 
+        progress("等待完成", "已点击开启，等待整套日常结束");
         var deadline = new Date().getTime() + this.RUN_TIMEOUT;
         var againConfirmed = false;
         while (new Date().getTime() < deadline) {
             check();
+            progress("等待完成", "等待完成标志，剩余等待上限 " + Math.max(0, Math.ceil((deadline - new Date().getTime()) / 1000)) + " 秒");
             if (this._findReward()) {
                 sgs.log.i("识别到奖励弹窗，整套日常状态待确认");
+                progress("核对结果", "已见奖励弹窗，继续核对整套完成并回城");
                 var completionSeen = this._closeResult();
                 return { status: completionSeen ? "success" : "unconfirmed",
                     message: completionSeen ? "已确认执行完成并返回主城" : "已关闭奖励弹窗，但整套日常完成状态未确认" };
             }
             if (this._done()) {
                 sgs.log.i("识别到「执行完成」绿条");
+                progress("返回主城", "已见执行完成标志，关闭助手并回城");
                 this._closeResult();
                 return { status: "success", message: "已识别执行完成标志并返回主城" };
             }

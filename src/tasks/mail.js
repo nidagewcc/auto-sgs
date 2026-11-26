@@ -19,7 +19,9 @@ sgs.tasks.mail = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         check();
+        progress("打开邮件", "寻找邮件入口并确认弹窗");
 
         // 1) 打开邮件弹窗
         var opened = false;
@@ -40,6 +42,7 @@ sgs.tasks.mail = {
         //    无可领邮件时按钮不消失、点了没反应，所以不拿按钮消失当判据。
         //    但第一轮必须真的识别到按钮：识别不到说明模板失配或弹窗没开成，
         //    继续静默走完会给出一个假的「已领取」结论，宁可直接报错。
+        progress("领取邮件", "点击全部领取，核对奖励或无可领取状态");
         var rewardSeen = false, emptySeen = false;
         for (var ci = 1; ci <= 2; ci++) {
             check();
@@ -61,6 +64,7 @@ sgs.tasks.mail = {
             sleep(600);
         }
 
+        progress("返回主城", "关闭邮件窗口并复检主城");
         // 3) 关闭弹窗，确认回主城
         var cp = v.find(this.CLOSE, 0.8, this.CLOSE_REGION, v.frame(true));
         sgs.log.i("关闭按钮命中 " + (cp ? (cp.x + "," + cp.y) : "无"));

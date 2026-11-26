@@ -156,6 +156,7 @@ sgs.daily = {
             var item = report.items[i], taskStarted = false;
             try {
                 this._check(options);
+                if (options.onTaskProgress) options.onTaskProgress(i + 1, report.items.length, item, "确认主城", "检查页面，尚未开始本项操作");
                 if (!sgs.dailyRecovery.ensureHome(previous, cancelled, i === 0)) {
                     report.aborted = true;
                     report.error = "未确认可操作主城，停止后续任务";
@@ -169,7 +170,13 @@ sgs.daily = {
                 var task = sgs.tasks[item.id];
                 if (!task || typeof task.run !== "function") throw new Error("任务模块不存在 " + item.id);
                 taskStarted = true;
-                var taskOptions = { checkCancelled: function () { self._check(options); } };
+                var taskOptions = {
+                    checkCancelled: function () { self._check(options); },
+                    onProgress: function (phase, detail) {
+                        self._check(options);
+                        if (options.onTaskProgress) options.onTaskProgress(i + 1, report.items.length, item, phase, detail);
+                    }
+                };
                 if (item.id === "zhuxian") taskOptions.allowReset = false;
                 var raw = task.run(taskOptions);
                 this._check(options);
@@ -200,6 +207,7 @@ sgs.daily = {
             previous = item.id;
             try {
                 this._check(options);
+                if (options.onTaskProgress) options.onTaskProgress(i + 1, report.items.length, item, "恢复主城", "核对任务结束页面，无法确认则停止后续步骤");
                 var home = sgs.dailyRecovery.ensureHome(item.id, cancelled, false);
                 this._check(options);
                 item.homeRecovered = home;

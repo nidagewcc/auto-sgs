@@ -88,10 +88,12 @@ sgs.tasks.zhuxian = {
     run: function (options) {
         var v = sgs.vision;
         var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
         var allowReset = options && typeof options.allowReset === "boolean" ? options.allowReset : this.allowReset;
         var summary = { reset: false, attemptsBefore: -1, swept: 0 };
         check();
 
+        progress("打开副本", "进入征战、最新回与 BOSS 面板");
         // 1) 主城 → 征战 → 副本地图
         check();
         v.clickPointAt(this.ENTER_ZHENGZHAN[0], this.ENTER_ZHENGZHAN[1]);
@@ -165,6 +167,7 @@ sgs.tasks.zhuxian = {
             sgs.log.i("[zhuxian] 重置后次数 " + attempts + "/5");
         }
 
+        progress("准备扫荡", "挑战次数 " + attempts + "/5" + (summary.reset ? "，已重置 20 元宝" : "，未重置"));
         // 6) 确认按钮当前是「扫荡N次」（不是重置/挑战），识别到才点
         if (!v.hasText("扫荡", this.SWEEP_REGION)) {
             throw new Error("未识别到扫荡按钮（可能关卡未三星或界面异常），不做盲点");
@@ -174,19 +177,22 @@ sgs.tasks.zhuxian = {
         sgs.log.i("[zhuxian] 已点击扫荡（" + attempts + " 次，预计耗体力 " + (attempts * 5) + "）");
 
         // 7) 等战报
+        progress("等待战报", "已点击扫荡 " + attempts + " 次，等待结果证据");
         var r = this._waitReport(15);
         if (r === "no_stamina") throw new Error("体力不足，扫荡被拒绝");
         if (r === "timeout") throw new Error("未出现扫荡战报，扫荡结果未知");
         summary.swept = attempts;
         var totalSeen = v.hasText("总计获得", this.REPORT_SUM_REGION);
         summary.status = totalSeen ? "success" : "unconfirmed";
-        summary.message = totalSeen ? "已确认扫荡战报和总计获得" : "已见扫荡战报，但总计获得未确认";
+        summary.message = "已扫荡 " + attempts + " 次" + (summary.reset ? "，已重置 20 元宝" : "，未重置")
+            + (totalSeen ? "，战报与总计获得已确认" : "，已见战报但收益未确认");
         if (totalSeen) {
             sgs.log.i("[zhuxian] 战报确认：扫荡战报 + 总计获得，共扫荡 " + attempts + " 次");
         } else {
             sgs.log.w("[zhuxian] 已见扫荡战报，但未读到「总计获得」，请人工回看截图");
         }
 
+        progress("返回主城", summary.message + "，正在关闭战报与面板");
         // 8) 关战报（蓝 X），确认战报消失
         check();
         v.clickPointAt(this.BLUE_X[0], this.BLUE_X[1]);

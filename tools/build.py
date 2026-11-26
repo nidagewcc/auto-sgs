@@ -98,16 +98,23 @@ sgs.pushLog = function () {
 };
 
 sgs.pushShot = function () {
-    if (!sgs.PC || pushFail >= 3) return;
+    sgs.lastShotError = "";
+    if (!sgs.PC) { sgs.lastShotError = "未配置电脑端地址，截图没有回传"; return false; }
+    if (pushFail >= 3) { sgs.lastShotError = "电脑端连续连接失败，截图没有回传"; return false; }
     try {
         var im = sgs.vision ? sgs.vision.frame(true) : null;
-        if (!im) return;
+        if (!im) { sgs.lastShotError = "未取得截图"; return false; }
         var b64 = images.toBase64(im, "jpg", 55);
-        http.post(sgs.PC + "/shot", b64, { timeout: 180000 });
+        var response = http.post(sgs.PC + "/shot", b64, { timeout: 180000 });
+        if (response && response.statusCode >= 200 && response.statusCode < 300) return true;
+        pushFail++;
+        sgs.lastShotError = "截图服务返回 HTTP " + (response ? response.statusCode : "未知");
     } catch (e) {
         pushFail++;
+        sgs.lastShotError = "截图回传失败：" + e;
         if (pushFail === 1) sgs.log.w("截图回传不可用（电脑端服务不可达）");
     }
+    return false;
 };
 """
 
@@ -201,6 +208,14 @@ threads.start(function () {
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
                 }
+                if (__tid2 === "status:show") {
+                    sgs.ui.showTaskResults();
+                    continue;
+                }
+                if (__tid2 === "status:hide") {
+                    sgs.statusUI.hideResults();
+                    continue;
+                }
                 if (__tid2 === "daily:readonly") {
                     sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
                     continue;
@@ -265,7 +280,11 @@ threads.start(function () {
         var cmd = String(cr.body.string()).replace(/[ \\r\\n\\t]+/g, "");
         if (cmd && cmd != "none") {
             sgs.log.i("[cmd] " + cmd);
-            if (cmd === "daily:readonly") {
+            if (cmd === "status:show") {
+                sgs.ui.showTaskResults();
+            } else if (cmd === "status:hide") {
+                sgs.statusUI.hideResults();
+            } else if (cmd === "daily:readonly") {
                 sgs.ui.runDaily("只读日常", [{ id: "playerinfo", enabled: true }]);
             } else if (cmd === "daily:settings") {
                 sgs.dailyUI.show();
@@ -343,8 +362,10 @@ MODS = [
     "src/tasks/zhuxian.js",
     "src/daily-recovery.js",
     "src/daily.js",
+    "src/task-status.js",
     "src/ui.js",
     "src/daily-ui.js",
+    "src/status-ui.js",
 ]
 
 

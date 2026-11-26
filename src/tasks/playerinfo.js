@@ -24,7 +24,11 @@ sgs.tasks.playerinfo = {
 
     SAMPLES: 3,
 
-    run: function () {
+    run: function (options) {
+        var check = options && options.checkCancelled ? options.checkCancelled : function () { };
+        var progress = options && options.onProgress ? options.onProgress : function () { };
+        check();
+        progress("读取信息", "采集 3 帧并核对 7 个字段");
         var v = sgs.vision;
         var roi = sgs.ROI.playerInfo;
         var out = {};
@@ -42,8 +46,11 @@ sgs.tasks.playerinfo = {
         var img = imgs[0];
         sgs.log.i("画面 " + img.getWidth() + "x" + img.getHeight() + " / 取帧 " + imgs.length);
 
+        var labels = { nickname: "昵称", level: "等级", combat_power: "战力", physical: "体力", energy: "精力", sycee: "元宝", jade: "玉石" };
         for (var i = 0; i < this.FIELDS.length; i++) {
+            check();
             var fd = this.FIELDS[i];
+            progress("读取信息", "正在核对 " + (i + 1) + "/7 · " + labels[fd.key]);
             var rect = roi[fd.key];
             var tries = this.UNSTABLE[fd.key] ? imgs.length : 1;
             var raws = [];
