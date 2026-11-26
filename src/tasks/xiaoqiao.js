@@ -25,6 +25,8 @@ sgs.tasks.xiaoqiao = {
     KAIQI_TH: 0.8,
 
     COMPLETION_REGION: [860, 1060, 1980, 1165],
+    RESULT_TITLE_REGION: [850, 120, 1920, 285],
+    RESULT_TITLES: ["军团一键援助", "执行结果", "日常结果"],
     REWARD_REGION: [950, 70, 1850, 260],
     BLANK_TAP: [400, 640],
     RESULT_CLOSE: [1940, 88],
@@ -73,6 +75,14 @@ sgs.tasks.xiaoqiao = {
     _findReward: function () {
         var v = sgs.vision;
         return v.hasText("恭喜获得", this.REWARD_REGION) || v.hasText("贡献获得", this.REWARD_REGION);
+    },
+
+    _resultDialogOpen: function () {
+        var v = sgs.vision;
+        for (var i = 0; i < this.RESULT_TITLES.length; i++) {
+            if (v.hasText(this.RESULT_TITLES[i], this.RESULT_TITLE_REGION)) return this.RESULT_TITLES[i];
+        }
+        return "";
     },
 
     _panelOpen: function () {
@@ -152,13 +162,17 @@ sgs.tasks.xiaoqiao = {
             if (this._findReward()) throw new Error("奖励弹窗未能关闭");
         }
 
-        // 2) 旧版「执行完成」结果窗
-        for (var c = 1; c <= 3 && this._done(); c++) {
-            completionSeen = true;
+        // 2) 「执行完成」结果窗：绿条可能和军团援助结果弹窗同时存在，
+        // 必须先确认标题弹窗也关闭，不能只看绿色条。
+        for (var c = 1; c <= 3 && (this._done() || this._resultDialogOpen()); c++) {
+            if (this._done()) completionSeen = true;
+            var dialog = this._resultDialogOpen();
+            sgs.log.i(dialog ? "关闭小乔结果弹窗：" + dialog : "关闭小乔执行完成条");
             v.clickPointAt(this.RESULT_CLOSE[0], this.RESULT_CLOSE[1]);
             var d3 = new Date().getTime();
-            while (new Date().getTime() - d3 < sgs.TIMEOUT.ui && this._done()) sleep(700);
+            while (new Date().getTime() - d3 < sgs.TIMEOUT.ui && (this._done() || this._resultDialogOpen())) sleep(700);
         }
+        if (this._resultDialogOpen()) throw new Error("小乔结果弹窗未能关闭：" + this._resultDialogOpen());
 
         // 3) 助手面板金色 X
         for (var p = 1; p <= 3; p++) {
@@ -212,8 +226,9 @@ sgs.tasks.xiaoqiao = {
             }
             if (this._done()) {
                 sgs.log.i("识别到「执行完成」绿条");
-                progress("返回主城", "已见执行完成标志，关闭助手并回城");
-                this._closeResult();
+                progress("关闭结果", "已见执行完成标志，先关闭结果弹窗再返回主城");
+                var closed = this._closeResult();
+                if (!closed) return { status: "unconfirmed", message: "已见执行完成标志，但结果弹窗关闭状态未确认" };
                 return { status: "success", message: "已识别执行完成标志并返回主城" };
             }
             if (!againConfirmed && v.hasText("再次执行", this.AGAIN_REGION)) {

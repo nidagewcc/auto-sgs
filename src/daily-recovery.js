@@ -42,6 +42,12 @@ sgs.dailyRecovery = (function () {
                 || regionText(v, x.TAB_REGION, im) === "日常" || hit(v, x, "KAIQI", "KAIQI_REGION", im);
             out.xReward = /恭喜获得|贡献获得/.test(regionText(v, x.REWARD_REGION, im));
             out.xResult = has(v, "执行完成", x.COMPLETION_REGION, im);
+            if (x.RESULT_TITLE_REGION && x.RESULT_TITLES) {
+                var resultText = regionText(v, x.RESULT_TITLE_REGION, im);
+                for (var xi = 0; xi < x.RESULT_TITLES.length; xi++) {
+                    if (resultText.indexOf(x.RESULT_TITLES[xi]) >= 0) { out.xResultDialog = true; break; }
+                }
+            }
         }
         if (j) {
             out.jPanel = /敌军入侵|十万火急/.test(regionText(v, j.TITLE_REGION, im));
@@ -57,7 +63,7 @@ sgs.dailyRecovery = (function () {
             out.zStage = has(v, "排行榜", z.STAGE_RANK_REGION, im);
         }
         out.blocked = out.blocked || out.mailClaim || out.mailClose || out.mailReward
-            || out.again || out.xPanel || out.xReward || out.xResult || out.jPanel || out.jReward
+            || out.again || out.xPanel || out.xReward || out.xResult || out.xResultDialog || out.jPanel || out.jReward
             || out.zDialog || out.zReport || out.zPanel || out.zMap || out.zStage;
         return out;
     }
@@ -134,6 +140,7 @@ sgs.dailyRecovery = (function () {
             else if (lastTaskId === "mail" && state.mailClaim && state.mailClose) {
                 point = [state.mailClose.x, state.mailClose.y];
             } else if (lastTaskId === "xiaoqiao" && state.xReward) point = x.BLANK_TAP;
+            else if (lastTaskId === "xiaoqiao" && state.xResultDialog) point = x.RESULT_CLOSE;
             else if (lastTaskId === "xiaoqiao" && state.xPanel && !state.xResult) point = x.PANEL_CLOSE;
             else if (lastTaskId === "junqing" && state.jReward) point = j.BLANK;
             else if (lastTaskId === "junqing" && state.jPanel) point = j.CLOSE_X;

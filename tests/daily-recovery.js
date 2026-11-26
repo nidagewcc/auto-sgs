@@ -148,6 +148,16 @@ test('recognized assistant tab safely closes panel', () => {
     const h = harness([{ texts: { '1820,390,2090,535': '日常功能' } }, home(), home()]);
     assert.equal(h.s.dailyRecovery.ensureHome('xiaoqiao', h.check), true); assert.deepEqual(h.calls.taps, [[2127, 235]]);
 });
+test('recognized xiaoqiao result dialog closes its own X before panel recovery', () => {
+    const h = harness([{ texts: { '850,120,1920,285': '军团一键援助' } }, home(), home()]);
+    assert.equal(h.s.dailyRecovery.ensureHome('xiaoqiao', h.check), true);
+    assert.deepEqual(h.calls.taps, [[1940, 88]]);
+});
+test('xiaoqiao result title from another task context never authorizes a tap', () => {
+    const h = harness([{ texts: { '850,120,1920,285': '军团一键援助' } }]);
+    assert.equal(h.s.dailyRecovery.ensureHome('mail', h.check), false);
+    assert.deepEqual(h.calls.taps, []);
+});
 test('recognized junqing title safely closes panel', () => {
     const h = harness([{ texts: { '700,240,2100,350': '敌军入侵，十万火急' } }, home(), home()]);
     assert.equal(h.s.dailyRecovery.ensureHome('junqing', h.check), true); assert.deepEqual(h.calls.taps, [[2410, 174]]);

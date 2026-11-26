@@ -117,6 +117,28 @@ test('xiaoqiao: direct completion green bar succeeds', () => {
     result(f.task.run(), 'success');
     assert.strictEqual(pointCount(f, f.task.RESULT_CLOSE), 1);
 });
+test('xiaoqiao: completion green bar with guild result dialog closes dialog before home', () => {
+    const f = xiaoqiao('done', false);
+    let closed = false;
+    f.vision.hasText = (text, region) => {
+        if (text === '军团一键援助' && region === f.task.RESULT_TITLE_REGION) return !closed;
+        return false;
+    };
+    const click = f.vision.clickPointAt;
+    f.vision.clickPointAt = (x, y) => {
+        click(x, y);
+        if (x === f.task.RESULT_CLOSE[0] && y === f.task.RESULT_CLOSE[1]) closed = true;
+    };
+    const r = f.task.run();
+    result(r, 'success');
+    assert.strictEqual(closed, true);
+    assert.strictEqual(pointCount(f, f.task.RESULT_CLOSE), 1);
+});
+test('xiaoqiao: result dialog that remains open fails instead of false success', () => {
+    const f = xiaoqiao('done', false);
+    f.vision.hasText = (text, region) => text === '军团一键援助' && region === f.task.RESULT_TITLE_REGION;
+    assert.throws(() => f.task.run(), /小乔结果弹窗未能关闭/);
+});
 test('xiaoqiao: cancellation after locating 开启 prevents spending click', () => {
     const f = xiaoqiao('home', false);
     let ready = false;
