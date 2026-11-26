@@ -7,6 +7,7 @@ sgs.ui = {
     _wm: null, _main: null, _ctx: null, dp: 1,
 
     ballView: null, ballLp: null,
+    _views: [], _disposed: false,
     dockView: null,
     panelView: null, _statusTv: null, _logTv: null,
 
@@ -51,6 +52,109 @@ sgs.ui = {
         } catch (e) {
             try { sgs.log.e("post 失败 " + e); } catch (e2) { }
         }
+    },
+
+    // 退出回调必须等主线程移除窗口后才结束，不能只排一个随后失效的 JS 回调。
+    _onMainSync: function (fn) {
+        if (!this._main) this._init();
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) { fn(); return; }
+        var latch = new java.util.concurrent.CountDownLatch(1);
+        var interrupted = java.lang.Thread.interrupted();
+        try {
+            var accepted = this._main.post(new java.lang.Runnable({ run: function () {
+                try { fn(); } catch (e) { sgs.log.e("清理窗口异常 " + e); }
+                finally { latch.countDown(); }
+            } }));
+            if (!accepted || !latch.await(3000, java.util.concurrent.TimeUnit.MILLISECONDS)) sgs.log.w("等待窗口清理超时");
+        } finally { if (interrupted) java.lang.Thread.currentThread().interrupt(); }
+    },
+
+    _attachWindow: function (view, lp, kind, field) {
+        var self = this;
+        view.setTag("auto-sgs:" + kind);
+        lp.setTitle("auto-sgs:" + kind);
+        this._post(function () {
+            // hide/dispose 可能发生在 addView 回调执行之前。
+            if (self._disposed || self[field] !== view) return;
+            try { self._wm.addView(view, lp); self._views.push(view); }
+            catch (e) {
+                if (self[field] === view) self[field] = null;
+                sgs.log.e("添加悬浮窗失败 " + kind + " " + e);
+            }
+        });
+    },
+
+    _viewIndex: function (view) {
+        for (var i = 0; i < this._views.length; i++) {
+            if (this._views[i] === view) return i;
+            try { if (this._views[i].equals(view)) return i; } catch (e) { }
+        }
+        return -1;
+    },
+
+    _removeWindowNow: function (view) {
+        if (!view) return;
+        try {
+            if (view.isAttachedToWindow()) this._wm.removeViewImmediate(view);
+            var i = this._viewIndex(view);
+            if (i >= 0) this._views.splice(i, 1);
+        } catch (e) { sgs.log.w("移除悬浮窗失败 " + e); }
+    },
+
+    _removeWindow: function (view) {
+        var self = this;
+        this._post(function () { self._removeWindowNow(view); });
+    },
+
+    // API 29+ 的公开接口，只列举本应用进程的窗口，不操作其他应用窗口。
+    recoverOrphans: function () {
+        var self = this, removed = 0;
+        this._onMainSync(function () {
+            try {
+                var roots = android.view.inspector.WindowInspector.getGlobalWindowViews();
+                var candidates = [];
+                for (var i = 0; i < roots.size(); i++) {
+                    var view = roots.get(i);
+                    if (self._viewIndex(view) >= 0) continue;
+                    var lp = view.getLayoutParams();
+                    if (!lp || lp.type != android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) continue;
+                    var tag = String(view.getTag());
+                    var owned = tag === "auto-sgs:ball" || tag === "auto-sgs:dock" || tag === "auto-sgs:panel";
+                    // 兼容旧版无标签的球：同时匹配类型、文字、尺寸、背景形状及颜色。
+                    if (!owned && view instanceof android.widget.TextView && String(view.getText()) === "三"
+                        && lp.width === self.px(54) && lp.height === self.px(54)) {
+                        var bg = view.getBackground();
+                        if (bg instanceof android.graphics.drawable.GradientDrawable
+                            && bg.getShape() === android.graphics.drawable.GradientDrawable.OVAL && bg.getColor()) {
+                            var color = bg.getColor().getDefaultColor();
+                            owned = (color === self.hex(self.C.bg) || color === self.hex(self.C.ballOn))
+                                && view.getCurrentTextColor() === self.hex("FFF2E2C0");
+                        }
+                    }
+                    if (owned) candidates.push(view);
+                }
+                if (candidates.length > 64) throw new Error("匹配数量异常，保留所有窗口等待检查");
+                for (var c = 0; c < candidates.length; c++) {
+                    self._removeWindowNow(candidates[c]);
+                    if (!candidates[c].isAttachedToWindow()) removed++;
+                }
+            } catch (e) { sgs.log.w("检查本项目残留窗口失败 " + e); }
+        });
+        sgs.log.i("清理本项目残留悬浮窗 " + removed + " 个");
+        return removed;
+    },
+
+    dispose: function () {
+        this._disposed = true;
+        this._stopTick();
+        this.ballView = null; this.ballLp = null;
+        this.dockView = null; this.panelView = null;
+        this._statusTv = null; this._logTv = null;
+        var self = this;
+        this._onMainSync(function () {
+            var views = self._views.slice();
+            for (var i = 0; i < views.length; i++) self._removeWindowNow(views[i]);
+        });
     },
 
     px: function (v) { return Math.round(v * this.dp); },
@@ -114,9 +218,14 @@ sgs.ui = {
 
     // ---------------- 悬浮球 ----------------
     showBall: function () {
+        var self = this;
+        this._post(function () { self._showBall(); });
+    },
+
+    _showBall: function () {
+        if (this._disposed || this.ballView) return;
         if (!this._ctx) this._init();
         var self = this;
-        if (this.ballView) { this.hideBall(); }
 
         var tv = new android.widget.TextView(this._ctx);
         tv.setText("三");
@@ -135,6 +244,7 @@ sgs.ui = {
         var sx = 0, sy = 0, bx = lp.x, by = lp.y, moved = false, tDown = 0;
         tv.setOnTouchListener(new android.view.View.OnTouchListener({
             onTouch: function (v, ev) {
+                if (self._disposed || self.ballView !== v) return true;
                 var act = ev.getAction();
                 if (act == 0) {
                     sx = ev.getRawX(); sy = ev.getRawY();
@@ -163,9 +273,7 @@ sgs.ui = {
         }));
 
         this.ballView = tv;
-        this._post(function () {
-            try { self._wm.addView(tv, lp); } catch (e) { sgs.log.e("加球失败 " + e); }
-        });
+        this._attachWindow(tv, lp, "ball", "ballView");
         sgs.log.i("悬浮球已显示");
     },
 
@@ -173,8 +281,8 @@ sgs.ui = {
         var v = this.ballView;
         if (!v) return;
         this.ballView = null;
-        var self = this;
-        this._post(function () { try { self._wm.removeView(v); } catch (e) { } });
+        this.ballLp = null;
+        this._removeWindow(v);
     },
 
     _paintBall: function (busy) {
@@ -197,11 +305,11 @@ sgs.ui = {
         var v = this.dockView;
         if (!v) return;
         this.dockView = null;
-        var self = this;
-        this._post(function () { try { self._wm.removeView(v); } catch (e) { } });
+        this._removeWindow(v);
     },
 
     showDock: function () {
+        if (this._disposed) return;
         if (!this._ctx) this._init();
         var self = this;
         if (this.dockView) return;
@@ -222,9 +330,7 @@ sgs.ui = {
 
         var lp = this._lp(W, -2, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
         this.dockView = root;
-        this._post(function () {
-            try { self._wm.addView(root, lp); } catch (e) { sgs.log.e("加圆盘失败 " + e); }
-        });
+        this._attachWindow(root, lp, "dock", "dockView");
         sgs.log.i("快捷圆盘已展开");
     },
 
@@ -299,6 +405,7 @@ sgs.ui = {
 
     // ---------------- 完整面板（长按球）----------------
     showPanel: function () {
+        if (this._disposed) return;
         if (!this._ctx) this._init();
         var self = this;
         if (this.panelView) { this.hidePanel(); return; }
@@ -379,9 +486,7 @@ sgs.ui = {
 
         var lp = this._lp(W, -2, this.px(8), 0, android.view.Gravity.RIGHT | android.view.Gravity.CENTER_VERTICAL);
         this.panelView = root;
-        this._post(function () {
-            try { self._wm.addView(root, lp); } catch (e) { sgs.log.e("加面板失败 " + e); }
-        });
+        this._attachWindow(root, lp, "panel", "panelView");
         this._startTick();
         sgs.log.i("完整面板已展开");
     },
@@ -393,8 +498,7 @@ sgs.ui = {
         this.panelView = null;
         this._statusTv = null;
         this._logTv = null;
-        var self = this;
-        this._post(function () { try { self._wm.removeView(v); } catch (e) { } });
+        this._removeWindow(v);
     },
 
     _row: function (t) {
@@ -622,3 +726,9 @@ sgs.ui = {
         this._post(function () { self._refresh(); });
     }
 };
+
+if (typeof events !== "undefined") {
+    events.on("exit", function () {
+        try { sgs.ui.dispose(); } catch (e) { try { sgs.log.e("退出清理失败 " + e); } catch (ignored) { } }
+    });
+}

@@ -115,29 +115,11 @@ RUNNER = u"""// ===== 启动（分步执行，每步单独 catch，便于定位�
 sgs.log.i("=== 悬浮面板启动 " + new Date().toTimeString().substring(0, 8) + " ===");
 try { sgs.log.i(device.brand + " " + device.model + " / Android " + device.release); } catch (e0) { }
 
-// step1 清理残留引擎：重复 bootstrap 会留下多个引擎抢 /cmd，只保留自己
-// 注意 engines.all() 直接返回 ScriptEngine，AutoX 的 .getEngine() 在 AutoJs6 上取不到
+// 仅停止同一入口文件的旧引擎。旧版直挂 WindowManager 的窗口由下面单独回收。
 try {
-    var __mine = engines.myEngine();
-    var __myId = __mine.getId();
-    var __all = engines.all();
-    var __killed = 0;
-    for (var __i = 0; __i < __all.length; __i++) {
-        try {
-            var __en = __all[__i];
-            var __id = -1;
-            try { __id = __en.getId(); } catch (__e0) { __id = -1; }
-            if (__id < 0) {
-                try { __id = __en.getEngine().getId(); } catch (__e1) { __id = -1; }
-            }
-            if (__id >= 0 && __id != __myId) {
-                try { __en.forceStop(); } catch (__e2) { try { __en.getEngine().forceStop(); } catch (__e3) { } }
-                __killed++;
-            }
-        } catch (__eq) { }
-    }
-    sgs.log.i("step1 清理引擎：停掉 " + __killed + " 个 / 共 " + __all.length + " 个");
-} catch (__ec) { }
+    sgs.log.i("step1 清理本项目旧引擎 " + sgs.lifecycle.stopOtherEngines() + " 个");
+    sgs.ui.recoverOrphans();
+} catch (__ec) { sgs.log.w("启动清理失败 " + __ec); }
 
 try { sgs.debugShots.init(); } catch (e1) { sgs.log.w("调试截图目录初始化失败 " + e1); }
 
@@ -214,7 +196,7 @@ threads.start(function () {
                 if (__tid2 === "reload") {
                     sgs.log.i("[投递] reload：重新加载脚本");
                     sgs.pushLog();
-                    try { engines.execScriptFile(__SELF); } catch (er0) { sgs.log.e("reload 失败 " + er0); }
+                    try { sgs.ui.dispose(); engines.execScriptFile(__SELF); } catch (er0) { sgs.log.e("reload 失败 " + er0); }
                     sleep(1500);
                     try { engines.myEngine().forceStop(); } catch (er1) { }
                     return;
@@ -288,25 +270,14 @@ threads.start(function () {
                 try { sgs.tasks.diag.run(); } catch (ed) { sgs.log.e("diag 失败 " + ed); }
                 sgs.pushLog();
             } else if (cmd.indexOf("ball") == 0) {
-                sgs.ui.ballView = null;
-                sgs.ui.showBall();
+                if (cmd === "ball:hide") sgs.ui.hideBall();
+                else sgs.ui.showBall();
             } else if (cmd.indexOf("clean") == 0) {
-                // 停掉除自己以外的所有脚本引擎（多次 bootstrap 会留下僵尸引擎抢指令）
-                var killed = 0;
                 try {
-                    var mine = engines.myEngine();
-                    var all = engines.all();
-                    for (var qi = 0; qi < all.length; qi++) {
-                        try {
-                            var en = all[qi].getEngine();
-                            if (en && en.getId() != mine.getId()) {
-                                en.forceStop();
-                                killed++;
-                            }
-                        } catch (eq) { }
-                    }
+                    var killed = sgs.lifecycle.stopOtherEngines();
+                    sgs.ui.recoverOrphans();
+                    sgs.log.i("clean 完成，停掉本项目旧引擎 " + killed + " 个");
                 } catch (qc) { sgs.log.e("clean 失败 " + qc); }
-                sgs.log.i("clean 完成，停掉 " + killed + " 个引擎");
                 sgs.pushLog();
             } else if (cmd.indexOf("panel") == 0) {
                 sgs.ui.showPanel();
@@ -318,17 +289,8 @@ threads.start(function () {
                     // 就是最新 bundle，自己重启最省事，也避免和投递版 reload 走两种行为
                     sgs.log.i("reload 本地重启");
                     sgs.pushLog();
-                    // 先清僵尸引擎，否则新旧两个引擎会抢 /cmd
-                    try {
-                        var mine2 = engines.myEngine();
-                        var all2 = engines.all();
-                        for (var ri = 0; ri < all2.length; ri++) {
-                            try {
-                                var en2 = all2[ri].getEngine();
-                                if (en2 && en2.getId() != mine2.getId()) en2.forceStop();
-                            } catch (re) { }
-                        }
-                    } catch (rc) { }
+                    sgs.lifecycle.stopOtherEngines();
+                    sgs.ui.dispose();
                     toast("重启中");
                     engines.execScriptFile("/storage/emulated/0/脚本/auto-sgs/_main.js");
                     sgs.log.i("reload 新引擎已拉起");
@@ -358,6 +320,7 @@ threads.start(function () {
 
 MODS = [
     "src/config.js",
+    "src/lifecycle.js",
     "src/debugshots.js",
     "src/vision.js",
     "src/game.js",
