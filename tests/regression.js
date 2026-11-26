@@ -23,9 +23,9 @@ function junqingEnv() {
         clickPointAt(x, y) { if (x === 2410 && y === 174) screen = 'home'; },
         waitImage() { return screen === 'home' ? { x: 1, y: 1 } : null; }
     };
-    const ctx = { sgs: { vision: v, log: logs, TIMEOUT: { page: 8000, ui: 3000 }, ANCHOR: {} }, sleep() {} };
+    const ctx = { sgs: { vision: v, log: logs, debugShots: { save: () => '/debug/junqing.png' }, TIMEOUT: { page: 8000, ui: 3000 }, ANCHOR: {} }, sleep() {} };
     load('src/tasks/junqing.js', ctx);
-    return { task: ctx.sgs.tasks.junqing, v, setScreen(value) { screen = value; }, captures: () => captures };
+    return { task: ctx.sgs.tasks.junqing, v, sgs: ctx.sgs, setScreen(value) { screen = value; }, captures: () => captures };
 }
 
 test('junqing reads a fresh frame for every panel check', () => {
@@ -54,6 +54,31 @@ test('junqing observes opening and closing after clicks', () => {
     env.task._doneCount = () => 3;
     env.task.run();
     assert.equal(env.task._panelOpen(), false);
+});
+test('junqing entry search uses widened safe lower-center region', () => {
+    const env = junqingEnv();
+    const regions = [];
+    env.v.tapImage = (name, threshold, region) => {
+        regions.push({ name, threshold, region: Array.from(region) });
+        return false;
+    };
+    const result = env.task.run();
+    assert.equal(result.status, 'skipped');
+    assert.deepEqual(regions, [
+        { name: env.task.ENTRY, threshold: 0.8, region: [650, 800, 1800, 1180] },
+        { name: env.task.ENTRY, threshold: 0.8, region: [650, 800, 1800, 1180] },
+        { name: env.task.ENTRY, threshold: 0.8, region: [650, 800, 1800, 1180] }
+    ]);
+});
+test('junqing skipped entry saves one diagnostic frame and does not challenge', () => {
+    const env = junqingEnv();
+    let diagnostics = 0;
+    env.sgs.debugShots = { save() { diagnostics++; return '/debug/junqing.png'; } };
+    env.v.tapImage = () => false;
+    const result = env.task.run();
+    assert.equal(result.status, 'skipped');
+    assert.equal(diagnostics, 1);
+    assert.deepEqual(env.v.clicks || [], []);
 });
 
 function uiEnv() {

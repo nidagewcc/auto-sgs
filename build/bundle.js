@@ -1444,7 +1444,9 @@ sgs.tasks.junqing = {
     name: "紧急军情·一键挑战",
 
     ENTRY: "special_event/jinjijunqing.png",
-    ENTRY_REGION: [1000, 930, 1250, 1090],
+    // 旧 ROI 过窄，多账号底部图标居中排列时模板左边界会落在 1000 外。
+    // 只扩展下方中部安全区域，仍要求 0.8 高阈值，避免全屏误匹配。
+    ENTRY_REGION: [650, 800, 1800, 1180],
 
     ONECLICK: "special_event/yijiantiaozhan.png",
     // 面板打开后这个按钮在 (2550,1234) 附近，和主城「冒险/征战」在同一块像素上，
@@ -1514,6 +1516,10 @@ sgs.tasks.junqing = {
         // 这一排日常图标是按数量居中的：紧急军情打完后图标本身会消失，
         // 位置会整体右移。所以入口缺失不能一律当异常，也不能盲点固定坐标兜底
         if (!seen) {
+            try {
+                var p = sgs.debugShots.save(v.frame(true), "junqing_entry_missing");
+                sgs.log.w("未识别到紧急军情入口，已保存调试图 " + p);
+            } catch (e) { sgs.log.w("紧急军情入口调试图保存失败 " + e); }
             sgs.log.i("主城未出现紧急军情入口，按今日已完成处理");
             return false;
         }
@@ -1563,7 +1569,6 @@ sgs.tasks.junqing = {
         var gotReward = this._dismissReward();
         if (gotReward) sgs.log.i("奖励浮层已关闭");
 
-        // 结果校验：面板必须还在。点完就退出等于把「有没有打到」全交给运气
         if (!this._panelOpen()) throw new Error("点击一键挑战后界面异常，面板未保持");
         var done = this._doneCount();
         if (done === 0) throw new Error("未识别到「已击杀」标签，挑战结果未知");

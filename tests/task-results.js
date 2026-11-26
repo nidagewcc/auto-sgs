@@ -229,6 +229,28 @@ for (const done of [1, 2, 3]) {
         assert.strictEqual(pointCount(f, [2550, 1234]), 1);
     });
 }
+test('junqing: reward overlay can temporarily hide panel title before killed check', () => {
+    const f = load('junqing');
+    let phase = 'panel', rewardVisible = true, closed = false;
+    f.task._openPanel = () => true;
+    f.vision.find = template => template === f.task.ONECLICK ? { x: 2550, y: 1234 } : null;
+    f.vision.hasText = (text, region) => {
+        if (text === '恭喜获得') return rewardVisible;
+        if (text === '击杀') return !rewardVisible && f.task.DONE_REGIONS.includes(region);
+        return false;
+    };
+    f.vision.ocrRect = () => phase === 'panel' && !rewardVisible ? '敌军入侵，十万火急' : '';
+    const click = f.vision.clickPointAt;
+    f.vision.clickPointAt = (x, y) => {
+        click(x, y);
+        if (x === f.task.BLANK[0] && y === f.task.BLANK[1]) rewardVisible = false;
+        if (x === f.task.CLOSE_X[0] && y === f.task.CLOSE_X[1]) { phase = 'home'; closed = true; }
+    };
+    f.vision.waitImage = () => closed ? { x: 1 } : null;
+    result(f.task.run(), 'success');
+    assert.strictEqual(rewardVisible, false);
+    assert.strictEqual(pointCount(f, [2550, 1234]), 1);
+});
 test('junqing: cancellation after panel navigation prevents challenge', () => {
     const f = load('junqing');
     let ready = false;
