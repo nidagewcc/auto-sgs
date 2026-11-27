@@ -17,3 +17,5 @@ __pycache__/
 .pytest_cache/
 # 调试截图与 uiautomator dump
 _shot/
+_bridge/
+tools/bridge-instances.json
