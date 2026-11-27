@@ -49,6 +49,7 @@ if (__SRC.indexOf("_main.js") < 0) {
 LOGBLOCK = u"""// ===== 日志与回传 =====
 sgs = (typeof sgs === "undefined") ? {} : sgs;
 var LOGS = [];
+var LOG_MEM_MAX = 2000;
 var pushedIdx = 0;
 var LOG_FILE = "/sdcard/Download/autosgs-logs/run.log";
 
@@ -73,10 +74,21 @@ function appendFile(s) {
     } catch (e) { }
 }
 
+function bufferLog(s) {
+    // 在线且头部仍未推送时，先回传再腾位置；pushLog 在 HTTP 前推进索引，失败告警不会递归推送。
+    if (LOGS.length >= LOG_MEM_MAX && pushedIdx === 0 && sgs.PC && pushFail < 3) sgs.pushLog();
+    LOGS.push(s);
+    var dropped = LOGS.length - LOG_MEM_MAX;
+    if (dropped > 0) {
+        LOGS.splice(0, dropped);
+        pushedIdx = Math.max(0, pushedIdx - dropped);
+    }
+}
+
 sgs.log = {
-    i: function (m) { var s = "[I] " + m; LOGS.push(s); log(s); appendFile(s); },
-    w: function (m) { var s = "[W] " + m; LOGS.push(s); log(s); appendFile(s); },
-    e: function (m) { var s = "[E] " + m; LOGS.push(s); log(s); appendFile(s); }
+    i: function (m) { var s = "[I] " + m; bufferLog(s); log(s); appendFile(s); },
+    w: function (m) { var s = "[W] " + m; bufferLog(s); log(s); appendFile(s); },
+    e: function (m) { var s = "[E] " + m; bufferLog(s); log(s); appendFile(s); }
 };
 
 // 电脑端服务不可达时自动停用，避免每次都刷异常
