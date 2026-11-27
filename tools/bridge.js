@@ -1,4 +1,4 @@
-// Gate 1 设备发现与只读采帧；部署协议尚待明确。
+// 模拟器设备发现、采帧及配方包部署桥接。
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -74,6 +74,27 @@ try {
     const id = idFor(serial);
     fs.mkdirSync(path.join(BASE, '_bridge', id, 'frames'), { recursive: true });
     shot(serial, options['--tag']);
+  } else if (command === 'capture') {
+    const action = args.shift(), options = {};
+    while (args.length) {
+      const key = args.shift();
+      if (key === '--include-discard' && !options[key]) { options[key] = true; continue; }
+      if (!['--serial', '--scene', '--session'].includes(key) || !args.length || options[key]) { const e = new Error('采集参数错误'); e.code = 2; throw e; }
+      options[key] = args.shift();
+    }
+    let id;
+    try { id = idFor(options['--serial']); } catch (e) { e.code = 2; throw e; }
+    const capture = require('./bridge-capture').create(adb, options['--serial'], id, BASE);
+    if (action === 'list' && !options['--scene'] && !options['--session'] && !options['--include-discard']) {
+      const recovery = capture.recovery();
+      if (recovery) console.log(JSON.stringify({ recovery }));
+      for (const item of capture.list()) console.log(JSON.stringify({ discarded: item.discarded, ...item.manifest }));
+    } else if (action === 'pull' && options['--scene'] && options['--session']) {
+      console.log(JSON.stringify(capture.pull(options['--scene'], options['--session'], options['--include-discard'])));
+    } else if (((action === 'start' || action === 'retry') && options['--scene'] || action === 'stop' && !options['--scene']) && !options['--session'] && !options['--include-discard']) {
+      const control = require('./bridge-capture-control').create(adb, options['--serial'], id, BASE, capture);
+      console.log(JSON.stringify(control.run(action, options['--scene'])));
+    } else { const e = new Error('采集命令支持 start、stop、retry、list 或 pull --scene <id> --session <id>'); e.code = 2; throw e; }
   } else if (command === 'deploy' || command === 'rollback') {
     const options = {};
     while (args.length) {
