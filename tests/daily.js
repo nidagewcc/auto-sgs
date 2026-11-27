@@ -95,6 +95,16 @@ test('execution order, progress and success/skipped/unconfirmed/exception counts
     assert.deepEqual(plain(r.counts), { success: 1, skipped: 1, unconfirmed: 1, failed: 1, not_run: 0, cancelled: 0 });
     assert.deepEqual(h.calls.progress, [[1, 4, 'mail'], [2, 4, 'junqing'], [3, 4, 'playerinfo'], [4, 4, 'zhuxian']]);
 });
+test('xiaoqiao skipped continues daily and counts as skipped', () => {
+    const h = harness({ tasks: { xiaoqiao: () => ({ status: 'skipped', message: '开启后 60 秒无执行信号，按官方新规则判定今日已完成并跳过' }) } });
+    h.seed(selected('xiaoqiao', 'mail'));
+    const r = h.run();
+    assert.deepEqual(ids(h), ['xiaoqiao', 'mail']);
+    assert.deepEqual(plain(statuses(r)), ['skipped', 'success']);
+    assert.equal(r.counts.skipped, 1);
+    assert.equal(r.counts.failed, 0);
+    assert.equal(r.aborted, false);
+});
 test('mail failure recovers and continues without retry', () => {
     const h = harness({ tasks: { mail: () => { throw new Error('mail failed'); } } }); const r = h.run();
     assert.deepEqual(ids(h), ['mail', 'xiaoqiao']); assert.deepEqual(plain(statuses(r)), ['failed', 'success']); assert.equal(r.items[0].homeRecovered, true);

@@ -46,7 +46,7 @@ function load(id) {
     });
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/tasks', id + '.js'), 'utf8'), context,
         { filename: 'src/tasks/' + id + '.js' });
-    return { task: sgs.tasks[id], vision, clicks, context };
+    return { task: sgs.tasks[id], vision, clicks, context, now: () => now };
 }
 function result(value, status) {
     assert(value && typeof value === 'object');
@@ -187,6 +187,52 @@ for (const completed of [true, false]) {
         assert(f.clicks.some(c => c[0] === 'rect' && c[1] === 1901 && c[2] === 941));
     });
 }
+test('xiaoqiao: idle wait closes panel and verifies home before skipping', () => {
+    const f = xiaoqiao('home', false);
+    let panel = true, homeChecks = 0, checks = 0;
+    assert.strictEqual(f.task.IDLE_WAIT_MS, 60000);
+    assert.strictEqual(f.task.POLL_MS, 8000);
+    f.vision.hasImage = () => panel;
+    f.vision.isHome = () => { homeChecks++; return !panel; };
+    const click = f.vision.clickPointAt;
+    f.vision.clickPointAt = (x, y) => {
+        click(x, y);
+        if (x === f.task.PANEL_CLOSE[0] && y === f.task.PANEL_CLOSE[1]) panel = false;
+    };
+    const r = f.task.run({ checkCancelled() { checks++; } });
+    result(r, 'skipped');
+    assert.strictEqual(r.message, '开启后 60 秒无执行信号，按官方新规则判定今日已完成并跳过');
+    assert(f.now() >= 60000 && f.now() < 70000);
+    assert.strictEqual(pointCount(f, f.task.PANEL_CLOSE), 1);
+    assert(homeChecks > 0 && checks > 2);
+});
+for (const mode of ['panel-stuck', 'not-home']) {
+    test('xiaoqiao: idle close failure ' + mode + ' throws', () => {
+        const f = xiaoqiao('home', false);
+        f.vision.hasImage = () => mode === 'panel-stuck';
+        f.vision.isHome = () => false;
+        assert.throws(() => f.task.run(), /面板未能关闭并回到主城/);
+    });
+}
+for (const mode of ['reward', 'done']) {
+    test('xiaoqiao: delayed ' + mode + ' before idle deadline keeps existing result path', () => {
+        const f = xiaoqiao('home', false);
+        f.task._findReward = () => mode === 'reward' && f.now() >= 48000;
+        f.task._done = () => mode === 'done' && f.now() >= 48000;
+        f.task._closeResult = () => true;
+        result(f.task.run(), 'success');
+        assert(f.now() >= 48000 && f.now() < 60000);
+    });
+}
+test('xiaoqiao: 再次执行 confirmation continues beyond idle deadline', () => {
+    const f = xiaoqiao('home', false);
+    f.vision.hasText = text => text === '再次执行' && f.now() >= 48000;
+    f.task._done = () => f.now() >= 80000;
+    f.task._closeResult = () => true;
+    result(f.task.run(), 'success');
+    assert(f.now() >= 80000);
+    assert.strictEqual(f.clicks.filter(c => c[0] === 'tapRect').length, 1);
+});
 test('xiaoqiao: direct completion green bar succeeds', () => {
     const f = xiaoqiao('done', false);
     result(f.task.run(), 'success');

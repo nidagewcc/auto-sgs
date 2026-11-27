@@ -39,6 +39,7 @@ sgs.tasks.xiaoqiao = {
     CONFIRM_REGION: [1430, 800, 1800, 925],
 
     POLL_MS: 8000,
+    IDLE_WAIT_MS: 60000,
     RUN_TIMEOUT: 420000,
 
     _findAvatar: function () {
@@ -218,7 +219,9 @@ sgs.tasks.xiaoqiao = {
             Math.round(this.RUN_TIMEOUT / 1000) + " 秒");
 
         progress("等待完成", "已点击开启，等待整套日常结束");
-        var deadline = new Date().getTime() + this.RUN_TIMEOUT;
+        var startedAt = new Date().getTime();
+        var deadline = startedAt + this.RUN_TIMEOUT;
+        var idleDeadline = startedAt + this.IDLE_WAIT_MS;
         var againConfirmed = false;
         while (new Date().getTime() < deadline) {
             check();
@@ -247,7 +250,14 @@ sgs.tasks.xiaoqiao = {
                 deadline = new Date().getTime() + this.RUN_TIMEOUT;
                 sgs.log.i("已确认「再次执行」，重新计时");
             }
+            if (!againConfirmed && new Date().getTime() >= idleDeadline) {
+                sgs.log.i("小乔 60 秒无执行信号，按无任务跳过");
+                check();
+                this._closeResult();
+                return { status: "skipped", message: "开启后 60 秒无执行信号，按官方新规则判定今日已完成并跳过" };
+            }
             var remain = deadline - new Date().getTime();
+            if (!againConfirmed) remain = Math.min(remain, idleDeadline - new Date().getTime());
             sleep(Math.min(this.POLL_MS, remain > 0 ? remain : 1));
         }
         throw new Error("未识别到完成信号");
