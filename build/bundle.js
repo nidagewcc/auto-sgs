@@ -140,7 +140,7 @@ sgs.SCREEN = { width: 2772, height: 1280 };
 sgs.ROI = {
     playerInfo: {
         nickname: [235, 10, 480, 75],
-        level: [1090, 500, 1280, 570],
+        level: [1045, 488, 1305, 600],
         combat_power: [320, 120, 500, 192],
         physical: [1430, 0, 1780, 75],
         energy: [1780, 0, 2100, 75],

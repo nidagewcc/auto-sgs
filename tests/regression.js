@@ -11,6 +11,11 @@ function test(name, fn) {
     fn();
     console.log('PASS ' + name);
 }
+test('player level ROI preserves measured margins', () => {
+    const ctx = {};
+    load('src/config.js', ctx);
+    assert.deepEqual(Array.from(ctx.sgs.ROI.playerInfo.level), [1045, 488, 1305, 600]);
+});
 function junqingEnv() {
     let screen = 'home';
     let captures = 0;
