@@ -284,7 +284,7 @@ sgs.vision = {
     _band: null,
     _scale: null,
 
-    /** 申请一次截图权限（每次启动需一次）；强制横屏，否则游戏横屏时会拿到竖屏画布 */
+    /** 最多申请3次截图权限；强制横屏，否则游戏横屏时会拿到竖屏画布 */
     init: function () {
         if (this._capOk) return true;
         try {
@@ -297,10 +297,19 @@ sgs.vision = {
                     land = (ori == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
                 } catch (eo) { land = (device.width > device.height); }
             }
-            this._capOk = this._autoGrant(land);
-            log("[vision] 申请截图 land=" + land + " 结果=" + this._capOk);
-            sleep(500);
-            return this._capOk;
+            for (var attempt = 1; attempt <= 3; attempt++) {
+                this._capOk = this._autoGrant(land);
+                log("[vision] 申请截图 land=" + land + " 第" + attempt + "次 结果=" + this._capOk);
+                if (this._capOk) { sleep(500); return true; }
+                if (attempt === 1) {
+                    var hint = "截图权限未授予，请把 AutoJs6 切到前台";
+                    toast(hint);
+                    sgs.log.w("[vision] " + hint);
+                }
+                if (attempt < 3) sleep(800);
+            }
+            sgs.log.e("[vision] 截图权限申请3次均失败");
+            return false;
         } catch (e) {
             log("[vision] 截图权限异常 " + e);
             return false;
