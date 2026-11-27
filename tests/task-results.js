@@ -104,6 +104,55 @@ test('mail: unrelated OCR text remains unconfirmed and saves diagnostics', () =>
     result(f.task.run(), 'unconfirmed');
     assert.strictEqual(diagnostics, 1);
 });
+test('mail: claimed check uses measured region and returns success with evidence', () => {
+    const f = load('mail');
+    let matched = 0;
+    f.vision.find = (template, threshold, region) => {
+        if (template !== 'daily_task/mail-claimed-check.png') return null;
+        assert.strictEqual(threshold, 0.85);
+        assert.deepStrictEqual(Array.from(region), [1050, 760, 1820, 1150]);
+        matched++;
+        return { x: 1307, y: 1022 };
+    };
+    const r = f.task.run();
+    result(r, 'success');
+    assert.match(r.message, /附件绿勾/);
+    assert(matched > 0);
+    assert.strictEqual(f.clicks.filter(c => c[0] === 'image' && c[1] === f.task.CLAIM).length, 2);
+});
+for (const text of ['没有邮件啦', '没有邮件啦~']) {
+    test('mail: observed empty text ' + text + ' is skipped', () => {
+        const f = load('mail');
+        f.vision.ocrRect = () => text;
+        result(f.task.run(), 'skipped');
+    });
+}
+test('mail: OCR regions exclude the measured status bar', () => {
+    const f = load('mail');
+    const bar = [1104, 1166, 1818, 1279];
+    let calls = 0;
+    f.vision.ocrRect = region => {
+        calls++;
+        const intersects = region[0] < bar[2] && region[2] > bar[0] && region[1] < bar[3] && region[3] > bar[1];
+        return intersects ? '没有邮件啦~' : '';
+    };
+    result(f.task.run(), 'unconfirmed');
+    assert(calls > 0);
+    assert.deepStrictEqual(Array.from(f.task.EMPTY_REGIONS, r => Array.from(r)), [[120, 260, 2200, 1150], [120, 700, 1060, 1150]]);
+});
+for (const mode of ['missing', 'low-score']) {
+    test('mail: ' + mode + ' claimed template cannot authorize success', () => {
+        const f = load('mail');
+        let queries = 0;
+        f.vision.find = (template, threshold) => {
+            if (template !== f.task.CLAIMED) return null;
+            queries++;
+            return mode === 'low-score' && threshold < 0.85 ? { x: 1, y: 1 } : null;
+        };
+        result(f.task.run(), 'unconfirmed');
+        assert(queries > 0);
+    });
+}
 test('mail: cancellation after navigation prevents claim', () => {
     const f = load('mail');
     let ready = false;
